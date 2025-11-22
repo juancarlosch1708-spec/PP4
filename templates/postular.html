@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <h2 class="text-3xl font-semibold mb-6 text-center text-purple-400">Postular a <span class="text-pink-400">{{ oferta.titulo }}</span></h2>
+
+  <!-- Mensajes de error/estado (serán llenados por JS si hay validación cliente) -->
+  <div id="form-alert" class="hidden mb-4 p-3 rounded-lg text-sm" role="alert"></div>
+
+  <form
+    method="POST"
+    action="{{ url_for('postular', oferta_id=oferta.id) }}"
+    enctype="multipart/form-data"
+    id="postularForm"
+    class="cyber-card p-6 rounded-xl space-y-4"
+    novalidate
+  >
+    <label class="block">
+      <span class="text-sm text-gray-300">Nombre completo</span>
+      <input type="text" name="nombre" id="nombre" placeholder="Tu nombre completo" required
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600 focus:outline-none focus:ring-2 focus:ring-pink-500" />
+    </label>
+
+    <label class="block">
+      <span class="text-sm text-gray-300">Correo electrónico</span>
+      <input type="email" name="correo" id="correo" placeholder="ejemplo@correo.com" required
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+    </label>
+
+    <label class="block">
+      <span class="text-sm text-gray-300">Fecha de nacimiento</span>
+      <input type="date" name="fecha_nacimiento" id="fecha_nacimiento" required
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500 focus:outline-none" />
+      <p class="text-xs text-gray-400 mt-1">Debes ser mayor de 18 años para postular.</p>
+    </label>
+
+    <label class="block">
+      <span class="text-sm text-gray-300">Resumen / Carta de presentación</span>
+      <textarea name="resumen" id="resumen" placeholder="Escribe un breve resumen..." class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600 focus:outline-none"></textarea>
+    </label>
+
+    <label class="block">
+      <span class="text-sm text-gray-300">Currículum (PDF, máximo 10 MB)</span>
+      <input type="file" name="curriculum" id="curriculum" accept="application/pdf" required
+             class="w-full mt-1 text-gray-300" />
+      <p id="fileHelp" class="text-xs text-gray-400 mt-1">Sólo PDF. Si tu currículum contiene imágenes, comprime antes si es necesario.</p>
+    </label>
+
+    <button type="submit" id="submitBtn" class="btn-cyber px-6 py-3 w-full">Enviar Postulación</button>
+  </form>
+</div>
+
+<!-- Validación cliente: tamaño/extension/edad -->
+<script>
+  (function(){
+    const form = document.getElementById('postularForm');
+    const alertBox = document.getElementById('form-alert');
+    const curriculum = document.getElementById('curriculum');
+    const fechaInput = document.getElementById('fecha_nacimiento');
+    const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+
+    // 1) Establecer max en fecha para que el usuario sea >= 18 años
+    function setMaxBirthdate() {
+      const today = new Date();
+      const year = today.getFullYear() - 18;
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      fechaInput.max = `${year}-${month}-${day}`;
+    }
+    setMaxBirthdate();
+
+    // 2) Mostrar alerta
+    function showAlert(message, kind='error') {
+      alertBox.classList.remove('hidden');
+      alertBox.textContent = message;
+      if (kind === 'error') {
+        alertBox.classList.remove('bg-green-700','text-green-100');
+        alertBox.classList.add('bg-red-800','text-red-100');
+      } else {
+        alertBox.classList.remove('bg-red-800','text-red-100');
+        alertBox.classList.add('bg-green-700','text-green-100');
+      }
+      window.scrollTo({ top: alertBox.getBoundingClientRect().top + window.scrollY - 20, behavior: 'smooth' });
+    }
+
+    // 3) Validación antes de enviar
+    form.addEventListener('submit', function(e){
+      alertBox.classList.add('hidden');
+      alertBox.textContent = '';
+
+      // Nombre / correo / fecha / archivo
+      const nombre = document.getElementById('nombre').value.trim();
+      const correo = document.getElementById('correo').value.trim();
+      const fecha = fechaInput.value;
+      const file = curriculum.files[0];
+
+      if (!nombre || !correo || !fecha || !file) {
+        e.preventDefault();
+        showAlert('Por favor completa todos los campos obligatorios.', 'error');
+        return;
+      }
+
+      // Fecha: verificar que sea <= max (ya seteado)
+      if (fecha > fechaInput.max) {
+        e.preventDefault();
+        showAlert('La fecha indica que eres menor de 18 años. Debes tener al menos 18 años para postular.', 'error');
+        return;
+      }
+
+      // Archivo: extensión y tamaño
+      const name = file.name.toLowerCase();
+      if (!name.endsWith('.pdf')) {
+        e.preventDefault();
+        showAlert('El archivo debe tener extensión .pdf', 'error');
+        return;
+      }
+      if (file.size > MAX_BYTES) {
+        e.preventDefault();
+        showAlert('El archivo excede el tamaño máximo permitido (10 MB).', 'error');
+        return;
+      }
+
+      // Si pasa validaciones, mostrar mensaje de envío (opcional)
+      // showAlert('Enviando postulación...', 'ok');
+      // form.submit(); // dejar que el navegador envíe el formulario
+    });
+
+    // 4) Validación inmediata al seleccionar archivo (mejor UX)
+    curriculum.addEventListener('change', function(){
+      alertBox.classList.add('hidden');
+      const file = curriculum.files[0];
+      if (!file) return;
+      const name = file.name.toLowerCase();
+      if (!name.endsWith('.pdf')) {
+        showAlert('Selecciona un archivo PDF válido.', 'error');
+        curriculum.value = '';
+        return;
+      }
+      if (file.size > MAX_BYTES) {
+        showAlert('El archivo seleccionado excede 10 MB. Comprime o reduce el tamaño e intenta de nuevo.', 'error');
+        curriculum.value = '';
+        return;
+      }
+      // ok: limpiar mensajes y mostrar tamaño
+      alertBox.classList.add('hidden');
+      alertBox.textContent = '';
+      document.getElementById('fileHelp').textContent = `Archivo listo: ${file.name} (${Math.round(file.size/1024)} KB)`;
+    });
+
+  })();
+</script>
+{% endblock %}

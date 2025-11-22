@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="text-3xl font-semibold mb-6 text-center text-blue-400">Crear Nueva Oferta</h2>
+<form method="POST" class="max-w-lg mx-auto cyber-card p-6 rounded-xl space-y-4">
+  <input type="text" name="titulo" placeholder="Título de la oferta" required class="w-full p-3 rounded bg-black/40 border border-purple-500 focus:outline-none">
+  <input type="text" name="empresa" placeholder="Nombre de la empresa" required class="w-full p-3 rounded bg-black/40 border border-pink-500 focus:outline-none">
+  <textarea name="descripcion" placeholder="Descripción del puesto" required class="w-full p-3 h-32 rounded bg-black/40 border border-blue-500 focus:outline-none"></textarea>
+  <button type="submit" class="btn-cyber px-6 py-3 w-full">Guardar Oferta</button>
+</form>
+{% endblock %}

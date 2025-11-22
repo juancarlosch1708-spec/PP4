@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title or "ReclutaJusto" }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background: radial-gradient(circle at top left, #0f0c29, #302b63, #24243e);
+      color: white;
+      font-family: 'Poppins', sans-serif;
+    }
+    .cyber-card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: 0.3s;
+    }
+    .cyber-card:hover {
+      border-color: #ff00ff;
+      box-shadow: 0 0 20px #ff00ff33;
+      transform: translateY(-2px);
+    }
+    .btn-cyber {
+      background: linear-gradient(90deg, #ff00ff, #007bff);
+      color: white;
+      font-weight: 600;
+      border-radius: 8px;
+      transition: all 0.3s ease;
+    }
+    .btn-cyber:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 15px #ff00ff66;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+  <nav class="flex justify-between items-center p-4 bg-black/30 backdrop-blur-md border-b border-purple-600 shadow-md">
+    <a href="/" class="text-2xl font-bold bg-gradient-to-r from-pink-500 via-purple-500 to-blue-500 bg-clip-text text-transparent">
+      💼 ReclutaJusto
+    </a>
+    <div class="space-x-4">
+      <a href="/ofertas" class="hover:text-pink-400">Ofertas</a>
+      <a href="/crear_oferta" class="hover:text-purple-400">Crear Oferta</a>
+    </div>
+  </nav>
+
+  <main class="flex-1 container mx-auto px-4 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="text-center p-4 text-sm text-gray-400 border-t border-purple-700 bg-black/40">
+    ⚙️ ReclutaJusto — Sistema de Reclutamiento Seguro © {{ 2025 }}
+  </footer>
+</body>
+</html>
