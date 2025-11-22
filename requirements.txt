@@ -1,0 +1,5 @@
+Flask
+Flask_SQLAlchemy
+cryptography
+PyPDF2
+werkzeug
