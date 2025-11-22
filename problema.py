@@ -1,13 +1,17 @@
+# problema.py
 import os
 import io
 import csv
 import uuid
-from datetime import datetime, date
 import base64
 import re
-import random # Agregado para simular el score
+import random
+from datetime import datetime, date
 
-from flask import Flask, render_template, request, redirect, url_for, send_file
+from flask import (
+    Flask, render_template, request, redirect, url_for, send_file,
+    flash, abort, jsonify
+)
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 
@@ -23,10 +27,12 @@ from PyPDF2 import PdfReader
 # -----------------------
 # CONFIGURACIÓN GENERAL
 # -----------------------
-UPLOAD_DIR = "curriculums"
-KEYS_DIR = "keys"
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "curriculums")
+KEYS_DIR = os.path.join(BASE_DIR, "keys")
 PRIVATE_KEY_PATH = os.path.join(KEYS_DIR, "private_key.pem")
 PUBLIC_KEY_PATH = os.path.join(KEYS_DIR, "public_key.pem")
+SECRET_KEY_PATH = os.path.join(BASE_DIR, "secret_key.txt")
 ALLOWED_EXTENSIONS = {"pdf"}
 MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10 MB máx
 
@@ -34,9 +40,21 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///reclutamiento.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'reclutamiento.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
+
+# SECRET_KEY (para flash y forms)
+def ensure_secret_key():
+    if not os.path.exists(SECRET_KEY_PATH):
+        with open(SECRET_KEY_PATH, "w") as f:
+            f.write(base64.urlsafe_b64encode(os.urandom(32)).decode())
+    with open(SECRET_KEY_PATH, "r") as f:
+        app.config['SECRET_KEY'] = f.read().strip()
+
+ensure_secret_key()
+
 db = SQLAlchemy(app)
 
 # ------------------------
@@ -95,26 +113,30 @@ def rsa_encrypt_string(plaintext: str) -> str:
     )
     return base64_b64encode_str(ct)
 
+def rsa_decrypt_string(b64_cipher: str) -> str:
+    """Descifra un string RSA (útil para pruebas locales)."""
+    priv = load_private_key()
+    ct = base64_b64decode_bytes(b64_cipher)
+    pt = priv.decrypt(
+        ct,
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+    )
+    return pt.decode("utf-8")
+
 # ------------------------
-# INTEGRACIÓN DE RNA / PLN
+# INTEGRACIÓN DE RNA / PLN (SIMULADA)
 # ------------------------
 def get_neural_network_match_score(oferta_desc: str, resumen: str, cv_text: str) -> int:
     """
     Función SIMULADA de Red Neuronal para generar un score de 0 a 100.
-    
-    Aquí es donde integrarías tu modelo real de PLN (p. ej., BERT, Word Embeddings
-    más una RNA de clasificación/regresión) para comparar el texto del CV y el
-    resumen con la descripción de la oferta y generar un puntaje de ajuste.
     """
-    # Lógica de simulación simple: el score será un número aleatorio
-    # En la vida real, se basaría en la afinidad de palabras clave, experiencia, etc.
-    if "python" in cv_text.lower() or "flask" in cv_text.lower():
-        # Damos un bonus si encontramos 'python' o 'flask' en el CV (ejemplo)
+    if "python" in cv_text.lower() or "flask" in cv_text.lower() or "django" in cv_text.lower():
         base_score = random.randint(70, 95)
     else:
         base_score = random.randint(30, 65)
-        
-    return base_score
+    # Pequeña mezcla con longitud del resumen/oferta
+    length_bonus = min(10, max(0, len(resumen) // 50))
+    return min(100, base_score + length_bonus)
 
 # ------------------------
 # MODELOS DE BASE DE DATOS
@@ -136,8 +158,6 @@ class Postulante(db.Model):
     curriculum_filename_enc = db.Column(db.Text, nullable=False)
     curriculum_ciphertext_b64 = db.Column(db.Text, nullable=False)
     curriculum_key_encrypted_b64 = db.Column(db.Text, nullable=False)
-    # NUEVO CAMPO AGREGADO PARA EL SCORE DE LA RNA
-    # Guardamos el score en claro (entero) además de mantener el campo cifrado
     match_score = db.Column(db.Integer, nullable=True)
     oferta_id = db.Column(db.Integer, db.ForeignKey('oferta.id'), nullable=False)
 
@@ -171,24 +191,29 @@ def index():
 
 @app.route("/ofertas")
 def listar_ofertas():
-    ofertas = Oferta.query.all()
+    ofertas = Oferta.query.order_by(Oferta.id.desc()).all()
     return render_template("ofertas.html", ofertas=ofertas, title="Ofertas Disponibles")
 
 @app.route("/crear_oferta", methods=["GET", "POST"])
 def crear_oferta():
     if request.method == "POST":
-        titulo = request.form["titulo"]
-        descripcion = request.form["descripcion"]
-        empresa = request.form["empresa"]
+        titulo = request.form.get("titulo", "").strip()
+        descripcion = request.form.get("descripcion", "").strip()
+        empresa = request.form.get("empresa", "").strip()
+        if not titulo or not descripcion or not empresa:
+            flash("Por favor completa todos los campos", "danger")
+            return redirect(url_for("crear_oferta"))
+
         nueva = Oferta(titulo=titulo, descripcion=descripcion, empresa=empresa)
         db.session.add(nueva)
         db.session.commit()
+        flash("Oferta creada correctamente", "success")
         return redirect(url_for("listar_ofertas"))
+
     return render_template("crear_oferta.html", title="Crear Oferta")
 
 @app.route("/eliminar_oferta/<int:oferta_id>", methods=["POST"])
 def eliminar_oferta(oferta_id):
-    """Elimina oferta y postulantes asociados (DB + archivos físicos)."""
     oferta = Oferta.query.get_or_404(oferta_id)
     files_to_delete = [p.curriculum_stored_name for p in Postulante.query.filter_by(oferta_id=oferta_id).all()]
     db.session.delete(oferta)
@@ -200,8 +225,9 @@ def eliminar_oferta(oferta_id):
             try:
                 os.remove(file_path)
             except OSError as e:
-                print(f"No se pudo eliminar {file_path}: {e}")
+                app.logger.warning(f"No se pudo eliminar {file_path}: {e}")
 
+    flash("Oferta y sus postulantes eliminados", "success")
     return redirect(url_for("listar_ofertas"))
 
 @app.route("/postular/<int:oferta_id>", methods=["GET", "POST"])
@@ -216,13 +242,22 @@ def postular(oferta_id):
         file = request.files.get("curriculum")
 
         if not nombre or not correo or not fecha_nac_str or not file:
-            return "Faltan campos obligatorios", 400
+            flash("Faltan campos obligatorios", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
 
-        fecha_nac = datetime.strptime(fecha_nac_str, "%Y-%m-%d").date()
+        try:
+            fecha_nac = datetime.strptime(fecha_nac_str, "%Y-%m-%d").date()
+        except ValueError:
+            flash("Formato de fecha incorrecto", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
+
         if calculate_age(fecha_nac) < 18:
-            return "Debes ser mayor de edad para postular", 400
+            flash("Debes ser mayor de edad para postular", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
+
         if not allowed_file(file.filename):
-            return "Solo se permite archivo PDF", 400
+            flash("Solo se permite archivo PDF", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
 
         orig_filename = secure_filename(file.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
@@ -231,10 +266,11 @@ def postular(oferta_id):
 
         extracted_text = extract_text_from_pdf(save_path)
 
-        # --- Lógica de la Red Neuronal ---
+        # --- Lógica de la Red Neuronal (simulada) ---
         match_score = get_neural_network_match_score(oferta.descripcion, resumen, extracted_text)
-        # ---------------------------------
 
+        # --- Cifrado e inserción ---
+        ensure_keys()
         hybrid = hybrid_encrypt_text(extracted_text or "Sin texto extraído")
         filename_enc = rsa_encrypt_string(orig_filename)
         nombre_enc = rsa_encrypt_string(nombre)
@@ -250,11 +286,12 @@ def postular(oferta_id):
             curriculum_filename_enc=filename_enc,
             curriculum_ciphertext_b64=hybrid["ciphertext_b64"],
             curriculum_key_encrypted_b64=hybrid["key_encrypted_b64"],
-            match_score=match_score,         # Guardamos el score en claro
+            match_score=match_score,
             oferta_id=oferta.id
         )
         db.session.add(nuevo)
         db.session.commit()
+        flash("Postulación enviada correctamente", "success")
         return redirect(url_for("listar_ofertas"))
 
     return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.titulo}")
@@ -263,11 +300,21 @@ def postular(oferta_id):
 def ver_postulantes(oferta_id):
     oferta = Oferta.query.get_or_404(oferta_id)
     postulantes = Postulante.query.filter_by(oferta_id=oferta.id).all()
+    # Para mostrar datos no cifrados, necesitarías descifrarlos con la clave privada (solo local)
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes, title="Postulantes")
+
+@app.route("/descargar_cv/<filename>")
+def descargar_cv(filename):
+    # Seguridad: evitar path traversal
+    if ".." in filename or filename.startswith("/"):
+        abort(400)
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        abort(404)
+    return send_file(file_path, as_attachment=True, download_name=filename)
 
 @app.route("/exportar_csv_con_datos_cifrados/<int:oferta_id>")
 def exportar_csv_con_datos_cifrados(oferta_id):
-    """Exporta todos los postulantes cifrados en CSV."""
     oferta = Oferta.query.get_or_404(oferta_id)
     postulantes = Postulante.query.filter_by(oferta_id=oferta.id).all()
 
@@ -277,7 +324,7 @@ def exportar_csv_con_datos_cifrados(oferta_id):
         "id_postulante", "nombre_enc_b64", "correo_enc_b64", "resumen_enc_b64",
         "fecha_nacimiento", "curriculum_filename_enc_b64",
         "curriculum_ciphertext_b64", "curriculum_key_encrypted_b64",
-        "match_score" # Score en claro
+        "match_score"
     ])
 
     for p in postulantes:
@@ -300,10 +347,16 @@ def exportar_csv_con_datos_cifrados(oferta_id):
     )
 
 # ------------------------
-# MAIN
+# INICIALIZACIÓN GLOBAL (se ejecuta con Gunicorn también)
+# ------------------------
+# Aseguramos llaves y tablas SIEMPRE al arrancar la app (importante para Render)
+ensure_keys()
+with app.app_context():
+    db.create_all()
+
+# ------------------------
+# MODO LOCAL
 # ------------------------
 if __name__ == "__main__":
-    ensure_keys()
-    with app.app_context():
-        db.create_all()
+    # Solo para desarrollo local
     app.run(host="0.0.0.0", port=8080, debug=True)
