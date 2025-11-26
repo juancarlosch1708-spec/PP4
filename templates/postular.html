@@ -1,43 +1,53 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="max-w-2xl mx-auto">
-<h2 class="text-3xl font-semibold mb-6 text-center text-purple-400">Postular a <span class="text-pink-400">{{ oferta.titulo }}</span></h2>
+  <h2 class="text-3xl font-semibold mb-6 text-center text-purple-400">
+      Postular a <span class="text-pink-400">{{ oferta.titulo }}</span>
+  </h2>
 
+  <form method="POST"
+        action="{{ url_for('postular', oferta_id=oferta._id_str) }}"
+        enctype="multipart/form-data"
+        class="cyber-card p-6 rounded-xl space-y-4">
 
-<form method="POST" action="{{ url_for('postular', oferta_id=oferta._id_str) }}" enctype="multipart/form-data" class="cyber-card p-6 rounded-xl space-y-4">
+    <label class="block">
+      <span class="text-sm text-gray-300">Nombre completo</span>
+      <input type="text" name="nombre" required
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600" />
+    </label>
 
+    <label class="block">
+      <span class="text-sm text-gray-300">Correo electrónico</span>
+      <input type="email" name="correo" required
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600" />
+    </label>
 
-<label class="block">
-<span class="text-sm text-gray-300">Nombre completo</span>
-<input type="text" name="nombre" required class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600" />
-</label>
+    <label class="block">
+      <span class="text-sm text-gray-300">Fecha de nacimiento</span>
+      <input type="date" name="fecha_nacimiento" required
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500" />
+    </label>
 
+    <label class="block">
+      <span class="text-sm text-gray-300">Resumen / Carta de presentación</span>
+      <textarea name="resumen"
+                class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600"></textarea>
+    </label>
 
-<label class="block">
-<span class="text-sm text-gray-300">Correo electrónico</span>
-<input type="email" name="correo" required class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600" />
-</label>
+    <label class="block">
+      <span class="text-sm text-gray-300">Currículum (PDF)</span>
+      <input type="file" name="curriculum"
+             accept="application/pdf"
+             required
+             class="w-full mt-1 text-gray-300" />
+    </label>
 
+    <button type="submit" class="btn-cyber px-6 py-3 w-full">
+      Enviar Postulación
+    </button>
 
-<label class="block">
-<span class="text-sm text-gray-300">Fecha de nacimiento</span>
-<input type="date" name="fecha_nacimiento" required class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500" />
-</label>
-
-
-<label class="block">
-<span class="text-sm text-gray-300">Resumen / Carta de presentación</span>
-<textarea name="resumen" class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600"></textarea>
-</label>
-
-
-<label class="block">
-<span class="text-sm text-gray-300">Currículum (PDF)</span>
-<input type="file" name="curriculum" accept="application/pdf" required class="w-full mt-1 text-gray-300" />
-</label>
-
-
-<button type="submit" class="btn-cyber px-6 py-3 w-full">Enviar Postulación</button>
-</form>
+  </form>
 </div>
 {% endblock %}
+
+
