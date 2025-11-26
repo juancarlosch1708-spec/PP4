@@ -1,74 +1,32 @@
-<!DOCTYPE html>
-background: #f5f5f5;
-margin: 0;
-padding: 20px;
-}
-h1 {
-text-align: center;
-color: #333;
-}
-.card {
-background: white;
-padding: 20px;
-margin: 20px auto;
-width: 80%;
-border-radius: 10px;
-box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-}
-.titulo {
-font-size: 22px;
-font-weight: bold;
-color: #222;
-}
-.descripcion {
-font-size: 15px;
-margin-top: 10px;
-color: #555;
-}
-.botones {
-margin-top: 20px;
-display: flex;
-gap: 10px;
-}
-a.boton, button.boton {
-background: #0066cc;
-color: white;
-padding: 10px 15px;
-text-decoration: none;
-border-radius: 6px;
-font-size: 14px;
-border: none;
-cursor: pointer;
-}
-button.boton.eliminar {
-background: #cc0000;
-}
-a.boton:hover, button.boton:hover {
-opacity: 0.85;
-}
-</style>
-</head>
-<body>
-<h1>Ofertas Disponibles</h1>
+{% extends "base.html" %}
+{% block content %}
+<h2 class="text-3xl font-semibold mb-6 text-center text-pink-400">Ofertas de Trabajo</h2>
 
+<div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+  {% for oferta in ofertas %}
+  <div class="cyber-card p-5 rounded-xl">
+    <h3 class="text-xl font-bold text-purple-300">{{ oferta.titulo }}</h3>
+    <p class="text-gray-300">{{ oferta.descripcion }}</p>
+    <p class="text-sm text-blue-400 mt-2">Empresa: {{ oferta.empresa }}</p>
 
-{% for oferta in ofertas %}
-<div class="card">
-<div class="titulo">{{ oferta.puesto }}</div>
-<div class="descripcion">{{ oferta.descripcion }}</div>
+    <div class="mt-4 flex space-x-3">
 
+      <a href="{{ url_for('postular', oferta_id=oferta._id_str) }}"
+         class="btn-cyber px-4 py-2 text-sm">Postular</a>
 
-<div class="botones">
-<a class="boton" href="{{ url_for('postular', oferta_id=oferta._id_str) }}">Postular</a>
-<a class="boton" href="{{ url_for('ver_postulantes', oferta_id=oferta._id_str) }}">Postulantes</a>
+      <a href="{{ url_for('ver_postulantes', oferta_id=oferta._id_str) }}"
+         class="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg">Postulantes</a>
 
+      <form action="{{ url_for('eliminar_oferta', oferta_id=oferta._id_str) }}"
+            method="post" onsubmit="return confirm('¿Eliminar oferta?')">
+        <button class="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg">Eliminar</button>
+      </form>
 
-<form action="{{ url_for('eliminar_oferta', oferta_id=oferta._id_str) }}" method="POST">
-<button class="boton eliminar" type="submit">Eliminar</button>
-</form>
+    </div>
+  </div>
+  {% endfor %}
 </div>
-</div>
-{% endfor %}
-</body>
-</html>
+{% endblock %}
+
+
 
