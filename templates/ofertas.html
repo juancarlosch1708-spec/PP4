@@ -1,21 +1,33 @@
-{% extends "base.html" %}
-{% block content %}
-<h2 class="text-3xl font-semibold mb-6 text-center text-pink-400">Ofertas de Trabajo</h2>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Ofertas de Trabajo</title>
+</head>
+<body>
+<h1>Ofertas Disponibles</h1>
 
-<div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-  {% for oferta in ofertas %}
-  <div class="cyber-card p-5 rounded-xl">
-    <h3 class="text-xl font-bold text-purple-300">{{ oferta.titulo }}</h3>
-    <p class="text-gray-300">{{ oferta.descripcion }}</p>
-    <p class="text-sm text-blue-400 mt-2">Empresa: {{ oferta.empresa }}</p>
-    <div class="mt-4 flex space-x-3">
-      <a href="{{ url_for('postular', oferta_id=oferta.id) }}" class="btn-cyber px-4 py-2 text-sm">Postular</a>
-      <a href="{{ url_for('ver_postulantes', oferta_id=oferta.id) }}" class="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg">Postulantes</a>
-      <form action="{{ url_for('eliminar_oferta', oferta_id=oferta.id) }}" method="post" onsubmit="return confirm('¿Eliminar oferta?')">
-        <button class="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg">Eliminar</button>
-      </form>
-    </div>
-  </div>
-  {% endfor %}
+
+{% for oferta in ofertas %}
+<div>
+<h3>{{ oferta.puesto }}</h3>
+<p>{{ oferta.descripcion }}</p>
+
+
+<!-- BOTÓN POSTULAR -->
+<a href="{{ url_for('postular', oferta_id=oferta._id_str) }}">Postular</a>
+
+
+<!-- BOTÓN VER POSTULANTES -->
+<a href="{{ url_for('ver_postulantes', oferta_id=oferta._id_str) }}">Postulantes</a>
+
+
+<!-- BOTÓN ELIMINAR -->
+<form action="{{ url_for('eliminar_oferta', oferta_id=oferta._id_str) }}" method="POST">
+<button type="submit">Eliminar</button>
+</form>
 </div>
-{% endblock %}
+<hr>
+{% endfor %}
+</body>
+</html>
