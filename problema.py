@@ -5,7 +5,7 @@ import csv
 import uuid
 import base64
 import re
-import sys # Añadido para manejar la salida de errores
+import sys
 from datetime import datetime, date
 from collections import Counter
 
@@ -17,8 +17,8 @@ from werkzeug.utils import secure_filename
 
 # Base de datos MongoDB
 from pymongo import MongoClient
-from pymongo.server_api import ServerApi # Importado para conexiones SRV
-from pymongo import errors # Importado para manejo de errores de conexión
+from pymongo.server_api import ServerApi
+from pymongo import errors
 from bson.objectid import ObjectId
 
 # Cryptography
@@ -28,7 +28,6 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet
 
 # PDF extractor
-# Nota: La librería PyPDF2 es grande. Asegúrate de que esté listada en tu requirements.txt.
 from PyPDF2 import PdfReader
 
 # -----------------------
@@ -61,32 +60,27 @@ def ensure_secret_key():
 ensure_secret_key()
 
 # ------------------------
-# CONEXIÓN A MONGO (CORREGIDO PARA SRV Y VARIABLES DE ENTORNO)
+# CONEXIÓN A MONGO
 # ------------------------
-# Busca la URI en MONGO_URI, MONGODB_URI (común en Render/Cloud), o usa localhost.
-# La URI SRV debe empezar con 'mongodb+srv://'
 MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI") or "mongodb://localhost:27017"
 
 try:
-    # Si usa mongodb+srv, PyMongo automáticamente usa la API Server 1
     if MONGO_URI.startswith("mongodb+srv://"):
         client = MongoClient(MONGO_URI, server_api=ServerApi('1'), serverSelectionTimeoutMS=5000)
     else:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        
-    # Intento de conexión para verificar (causa el error DNS que tenías)
+
     client.admin.command('ping')
     print("✅ Conexión a MongoDB exitosa.", file=sys.stderr)
-    
+
 except errors.ConfigurationError as e:
-    # Esto captura el error de DNS Query Name Does Not Exist
     print(f"❌ ERROR CRÍTICO DE CONFIGURACIÓN DE MONGO: {e}", file=sys.stderr)
     print("Asegúrate de que la variable MONGO_URI (o MONGODB_URI) sea correcta y que la red esté permitida.", file=sys.stderr)
-    sys.exit(1) # Salir si la DB no se conecta
+    sys.exit(1)
 except Exception as e:
     print(f"❌ ERROR CRÍTICO DE CONEXIÓN DE MONGO: {e}", file=sys.stderr)
     sys.exit(1)
-    
+
 db = client["reclutamiento_db"]
 ofertas_col = db["ofertas"]
 postulantes_col = db["postulantes"]
@@ -94,8 +88,6 @@ postulantes_col = db["postulantes"]
 # ------------------------
 # CLAVES Y CIFRADO
 # ------------------------
-# ... (Funciones ensure_keys, load_public_key, load_private_key, etc. sin cambios) ...
-
 def ensure_keys():
     """Genera claves RSA si no existen."""
     if not (os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH)):
@@ -127,7 +119,6 @@ def base64_b64encode_str(b: bytes) -> str:
 def base64_b64decode_bytes(s: str) -> bytes:
     return base64.b64decode(s.encode("utf-8"))
 
-# --- Cifrado híbrido RSA + Fernet ---
 def hybrid_encrypt_text(plaintext: str):
     """Cifra texto combinando Fernet (simétrico) y RSA (asimétrico)."""
     fkey = Fernet.generate_key()
@@ -162,8 +153,6 @@ def rsa_decrypt_string(b64_cipher: str) -> str:
 # ------------------------
 # EXTRACCIÓN DE TEXTO Y UTILIDADES
 # ------------------------
-# ... (Funciones allowed_file, extract_text_from_pdf, calculate_age sin cambios) ...
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -185,8 +174,6 @@ def calculate_age(born: date) -> int:
 # ------------------------
 # LOGICA DETERMINISTICA DE "RNA" GUIADA POR PALABRAS CLAVE
 # ------------------------
-# ... (Funciones extract_keywords, get_neural_network_match_score sin cambios) ...
-
 STOPWORDS = {
     "de","la","el","y","en","a","los","las","con","para","por","un","una","es","se","su",
     "que","al","del","como","los","las","empleo","puesto","experiencia"
@@ -196,7 +183,6 @@ def extract_keywords(text, min_len=4):
     """Extrae keywords simples desde un texto (sin librerías externas). Determinístico."""
     text = re.sub(r"[^\w\s]", " ", text.lower())
     tokens = [t for t in text.split() if len(t) >= min_len and t not in STOPWORDS and not t.isnumeric()]
-    # devolvemos las palabras con mayor frecuencia
     counts = Counter(tokens)
     keywords = [w for w, c in counts.most_common(20)]
     return keywords
@@ -206,51 +192,42 @@ def get_neural_network_match_score(oferta_title: str, oferta_desc: str, resumen:
     Función determinista que calcula un score (0-100) basado en la presencia de palabras clave
     extraídas de la oferta (título + descripción). No usa random.
     """
-    # Texto fuente para extraer keywords
     source = f"{oferta_title} {oferta_desc}"
     keywords = extract_keywords(source)
     if not keywords:
-        # fallback: palabras técnicas comunes
         keywords = ["python", "javascript", "sql", "java", "aws", "docker", "flask", "django"]
 
-    # contar coincidencias (ponderadas)
     resumen_l = (resumen or "").lower()
     cv_l = (cv_text or "").lower()
     score_raw = 0.0
     max_possible = 0.0
 
     for kw in keywords:
-        # peso: CV 0.7, resumen 0.3
-        max_possible += 1.0  # por keyword consideramos 1 punto máximo
+        max_possible += 1.0
         count_cv = cv_l.count(kw)
         count_res = resumen_l.count(kw)
-        # cada aparición cuenta, pero cap por keyword a evitar sesgo extremo
         contrib = min(3, count_cv) * 0.7 + min(2, count_res) * 0.3
-        # normalizamos contrib para que 1 keyword presente al menos una vez dé valor significativo
-        score_raw += contrib / 3.0  # divisor empírico para normalizar
+        score_raw += contrib / 3.0
 
-    # Normalizar en 0..100
     if max_possible <= 0:
         normalized = 0.0
     else:
         normalized = (score_raw / (max_possible * ( (0.7*3 + 0.3*2) / 3.0 ))) * 100.0
 
-    # Bonus por longitud del resumen (si relevante)
     length_bonus = min(10, max(0, len(resumen_l) // 100))
     final_score = int(max(0, min(100, round(normalized) + length_bonus)))
 
     return final_score
 
 # ------------------------
-# RUTAS (CORREGIDAS CON TRAILING SLASH)
+# RUTAS (CON TRAILING SLASH)
 # ------------------------
 @app.route("/")
 def index():
     return render_template("index.html", title="Inicio | ReclutaJusto")
 
-@app.route("/ofertas/") # Añadida barra final
+@app.route("/ofertas/")
 def listar_ofertas():
-    # obtener ofertas ordenadas por creación (desc)
     ofertas_cursor = ofertas_col.find().sort("_created", -1)
     ofertas = []
     for o in ofertas_cursor:
@@ -258,7 +235,7 @@ def listar_ofertas():
         ofertas.append(o)
     return render_template("ofertas.html", ofertas=ofertas, title="Ofertas Disponibles")
 
-@app.route("/crear_oferta/", methods=["GET", "POST"]) # Añadida barra final
+@app.route("/crear_oferta/", methods=["GET", "POST"])
 def crear_oferta():
     if request.method == "POST":
         titulo = request.form.get("titulo", "").strip()
@@ -274,7 +251,7 @@ def crear_oferta():
             "empresa": empresa,
             "_created": datetime.utcnow()
         }
-        res = ofertas_col.insert_one(nueva)
+        ofertas_col.insert_one(nueva)
         flash("Oferta creada correctamente", "success")
         return redirect(url_for("listar_ofertas"))
 
@@ -290,7 +267,6 @@ def eliminar_oferta(oferta_id):
     if not oferta:
         abort(404)
 
-    # Buscar postulantes y eliminar archivos
     postulantes = list(postulantes_col.find({"oferta_id": oferta_id}))
     for p in postulantes:
         filename = p.get("curriculum_stored_name")
@@ -302,22 +278,26 @@ def eliminar_oferta(oferta_id):
                 except OSError as e:
                     app.logger.warning(f"No se pudo eliminar {file_path}: {e}")
 
-    # Eliminar postulantes y oferta
-    post_res = postulantes_col.delete_many({"oferta_id": oferta_id})
+    postulantes_col.delete_many({"oferta_id": oferta_id})
     ofertas_col.delete_one({"_id": oid})
 
     flash("Oferta y sus postulantes eliminados", "success")
     return redirect(url_for("listar_ofertas"))
 
-@app.route("/postular/<oferta_id>/", methods=["GET", "POST"]) # CORREGIDO: Añadida barra final
+# RUTA DE CAPTURA: /postular/ (sin id) para evitar 404 en render/frontend
+@app.route("/postular/")
+def postular_sin_id():
+    flash("No se especificó una oferta para postular.", "warning")
+    return redirect(url_for("listar_ofertas"))
+
+@app.route("/postular/<oferta_id>/", methods=["GET", "POST"])
 def postular(oferta_id):
     # Lógica para manejar IDs tipo ObjectId o string
     try:
         oid = ObjectId(oferta_id)
         oferta = ofertas_col.find_one({"_id": oid})
     except Exception:
-        # Si no es un ObjectId válido, busca por string (si se guardó así)
-        oferta = ofertas_col.find_one({"_id": oferta_id}) 
+        oferta = ofertas_col.find_one({"_id": oferta_id})
 
     if not oferta:
         abort(404)
@@ -354,12 +334,10 @@ def postular(oferta_id):
 
         extracted_text = extract_text_from_pdf(save_path)
 
-        # --- Lógica "RNA" determinista basada en keywords ---
         titulo = oferta.get("titulo", "")
         descripcion = oferta.get("descripcion", "")
         match_score = get_neural_network_match_score(titulo, descripcion, resumen, extracted_text)
 
-        # --- Cifrado e inserción ---
         ensure_keys()
         hybrid = hybrid_encrypt_text(extracted_text or "Sin texto extraído")
         filename_enc = rsa_encrypt_string(orig_filename)
@@ -386,28 +364,32 @@ def postular(oferta_id):
 
     return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo', '')}")
 
-@app.route("/postulantes/<oferta_id>/") # CORREGIDO: Añadida barra final
+# RUTA DE CAPTURA: /postulantes/ (sin id) para evitar 404 en render/frontend
+@app.route("/postulantes/")
+def ver_postulantes_sin_id():
+    flash("No se especificó una oferta para ver postulantes.", "warning")
+    return redirect(url_for("listar_ofertas"))
+
+@app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
     try:
         oid = ObjectId(oferta_id)
         oferta = ofertas_col.find_one({"_id": oid})
     except Exception:
-        oferta = ofertas_col.find_one({"_id": oferta_id}) 
-        
+        oferta = ofertas_col.find_one({"_id": oferta_id})
+
     if not oferta:
         abort(404)
-        
+
     postulantes_cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
     postulantes = []
     for p in postulantes_cursor:
         p["_id_str"] = str(p["_id"])
         postulantes.append(p)
-    # Para mostrar datos no cifrados, necesitarías descifrarlos con la clave privada (solo local)
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes, title="Postulantes")
 
 @app.route("/descargar_cv/<filename>")
 def descargar_cv(filename):
-    # Seguridad: evitar path traversal
     if ".." in filename or filename.startswith("/"):
         abort(400)
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -421,11 +403,11 @@ def exportar_csv_con_datos_cifrados(oferta_id):
         oid = ObjectId(oferta_id)
         oferta = ofertas_col.find_one({"_id": oid})
     except Exception:
-        oferta = ofertas_col.find_one({"_id": oferta_id}) 
+        oferta = ofertas_col.find_one({"_id": oferta_id})
 
     if not oferta:
         abort(404)
-        
+
     postulantes = list(postulantes_col.find({"oferta_id": oferta_id}))
 
     output = io.StringIO()
@@ -465,17 +447,14 @@ def exportar_csv_con_datos_cifrados(oferta_id):
 # INICIALIZACIÓN GLOBAL
 # ------------------------
 ensure_keys()
-# creamos índices sencillos para mejor búsqueda (opcionales)
 try:
     ofertas_col.create_index("titulo")
     postulantes_col.create_index("oferta_id")
 except Exception as e:
     print(f"Advertencia: No se pudieron crear los índices de MongoDB. Error: {e}", file=sys.stderr)
 
-
 # ------------------------
 # MODO LOCAL
 # ------------------------
 if __name__ == "__main__":
-    # Solo para desarrollo local
     app.run(host="0.0.0.0", port=8080, debug=True)
