@@ -15,7 +15,7 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-# Base de datos MongoDB
+# MongoDB
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from pymongo import errors
@@ -220,6 +220,51 @@ def get_neural_network_match_score(oferta_title: str, oferta_desc: str, resumen:
     return final_score
 
 # ------------------------
+# FUNCIONES AUXILIARES (BORRADO SEGURO)
+# ------------------------
+def _delete_offer_and_postulants_by_id_string(oferta_id_str: str):
+    """
+    Elimina oferta + postulantes asociados. Maneja casos donde oferta_id fue guardado
+    como ObjectId o como string.
+    """
+    # Primero intentamos interpretar como ObjectId
+    oferta = None
+    oid = None
+    try:
+        oid = ObjectId(oferta_id_str)
+        oferta = ofertas_col.find_one({"_id": oid})
+    except Exception:
+        oid = None
+
+    if not oferta:
+        # intentamos buscar por string en _id o por campo 'oferta_id' (si guardaste como string)
+        oferta = ofertas_col.find_one({"_id": oferta_id_str}) or ofertas_col.find_one({"titulo": {"$regex": re.escape(oferta_id_str), "$options": "i"}})
+
+    if not oferta:
+        return False, "Oferta no encontrada"
+
+    oferta_real_id = oferta.get("_id")
+    # Buscar postulantes asociados (buscar por campo oferta_id que puede ser string u ObjectId)
+    postulantes = list(postulantes_col.find({"$or": [{"oferta_id": str(oferta_real_id)}, {"oferta_id": oferta_id_str}, {"oferta_id": oferta_real_id}] }))
+
+    # Eliminar archivos físicos
+    for p in postulantes:
+        filename = p.get("curriculum_stored_name")
+        if filename:
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError as e:
+                    app.logger.warning(f"No se pudo eliminar {file_path}: {e}")
+
+    # Eliminar registros
+    postulantes_col.delete_many({"$or": [{"oferta_id": str(oferta_real_id)}, {"oferta_id": oferta_id_str}, {"oferta_id": oferta_real_id}] })
+    ofertas_col.delete_one({"_id": oferta_real_id})
+
+    return True, None
+
+# ------------------------
 # RUTAS (CON TRAILING SLASH)
 # ------------------------
 @app.route("/")
@@ -257,30 +302,36 @@ def crear_oferta():
 
     return render_template("crear_oferta.html", title="Crear Oferta")
 
+# RUTA de BORRADO que acepta POST sin id en la URL (fallback para formularios mal formados)
+@app.route("/eliminar_oferta/", methods=["POST"])
+def eliminar_oferta_sin_id():
+    # Buscamos oferta_id en form/data/json
+    oferta_id = request.form.get("oferta_id") or request.form.get("id")
+    if not oferta_id:
+        # Si no lo encontramos, intentamos extraer JSON
+        try:
+            data = request.get_json(silent=True) or {}
+            oferta_id = data.get("oferta_id") or data.get("id")
+        except Exception:
+            oferta_id = None
+
+    if not oferta_id:
+        flash("No se especificó la oferta a eliminar.", "warning")
+        return redirect(url_for("listar_ofertas"))
+
+    ok, err = _delete_offer_and_postulants_by_id_string(oferta_id)
+    if not ok:
+        flash(f"No se pudo eliminar la oferta: {err}", "danger")
+    else:
+        flash("Oferta y sus postulantes eliminados", "success")
+    return redirect(url_for("listar_ofertas"))
+
+# RUTA original (con id en la URL)
 @app.route("/eliminar_oferta/<oferta_id>", methods=["POST"])
 def eliminar_oferta(oferta_id):
-    try:
-        oid = ObjectId(oferta_id)
-    except Exception:
-        abort(400)
-    oferta = ofertas_col.find_one({"_id": oid})
-    if not oferta:
+    ok, err = _delete_offer_and_postulants_by_id_string(oferta_id)
+    if not ok:
         abort(404)
-
-    postulantes = list(postulantes_col.find({"oferta_id": oferta_id}))
-    for p in postulantes:
-        filename = p.get("curriculum_stored_name")
-        if filename:
-            file_path = os.path.join(UPLOAD_DIR, filename)
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except OSError as e:
-                    app.logger.warning(f"No se pudo eliminar {file_path}: {e}")
-
-    postulantes_col.delete_many({"oferta_id": oferta_id})
-    ofertas_col.delete_one({"_id": oid})
-
     flash("Oferta y sus postulantes eliminados", "success")
     return redirect(url_for("listar_ofertas"))
 
@@ -458,3 +509,4 @@ except Exception as e:
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
+
