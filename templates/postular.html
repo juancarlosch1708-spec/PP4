@@ -5,49 +5,55 @@
       Postular a <span class="text-pink-400">{{ oferta.titulo }}</span>
   </h2>
 
+  <!-- FORMULARIO CORRECTO -->
   <form method="POST"
         action="{{ url_for('postular', oferta_id=oferta._id_str) }}"
         enctype="multipart/form-data"
-        class="cyber-card p-6 rounded-xl space-y-4">
+        class="cyber-card p-6 rounded-xl space-y-4 border border-purple-700 bg-black/40 shadow-[0_0_20px_rgba(255,0,255,0.4)]">
 
+    <!-- NOMBRE -->
     <label class="block">
       <span class="text-sm text-gray-300">Nombre completo</span>
       <input type="text" name="nombre" required
-             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600" />
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600 text-gray-200 focus:border-pink-500 outline-none" />
     </label>
 
+    <!-- CORREO -->
     <label class="block">
       <span class="text-sm text-gray-300">Correo electrónico</span>
       <input type="email" name="correo" required
-             class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600" />
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600 text-gray-200 focus:border-purple-400 outline-none" />
     </label>
 
+    <!-- FECHA NACIMIENTO -->
     <label class="block">
       <span class="text-sm text-gray-300">Fecha de nacimiento</span>
       <input type="date" name="fecha_nacimiento" required
-             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500" />
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500 text-gray-200 focus:border-pink-500 outline-none" />
     </label>
 
+    <!-- RESUMEN -->
     <label class="block">
       <span class="text-sm text-gray-300">Resumen / Carta de presentación</span>
       <textarea name="resumen"
-                class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600"></textarea>
+                class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600 text-gray-200 focus:border-purple-400 outline-none"></textarea>
     </label>
 
+    <!-- CV -->
     <label class="block">
       <span class="text-sm text-gray-300">Currículum (PDF)</span>
       <input type="file" name="curriculum"
              accept="application/pdf"
              required
-             class="w-full mt-1 text-gray-300" />
+             class="w-full mt-1 text-gray-300 file:bg-purple-700 file:text-white file:px-4 file:py-2 file:rounded file:border-none hover:file:bg-purple-500" />
     </label>
 
-    <button type="submit" class="btn-cyber px-6 py-3 w-full">
+    <!-- BOTÓN -->
+    <button type="submit"
+            class="btn-cyber px-6 py-3 w-full text-lg font-bold rounded shadow-[0_0_12px_rgba(255,0,255,0.6)]">
       Enviar Postulación
     </button>
 
   </form>
 </div>
 {% endblock %}
-
-
