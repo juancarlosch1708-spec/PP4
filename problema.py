@@ -46,6 +46,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
 
 app = Flask(__name__)
+# Evita problemas por trailing slash redireccionando POST a GET; hace las rutas permissivas
+app.url_map.strict_slashes = False
+
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
 
@@ -71,14 +74,13 @@ try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 
     client.admin.command('ping')
-    print("✅ Conexión a MongoDB exitosa.", file=sys.stderr)
+    app.logger.info("✅ Conexión a MongoDB exitosa.")
 
 except errors.ConfigurationError as e:
-    print(f"❌ ERROR CRÍTICO DE CONFIGURACIÓN DE MONGO: {e}", file=sys.stderr)
-    print("Asegúrate de que la variable MONGO_URI (o MONGODB_URI) sea correcta y que la red esté permitida.", file=sys.stderr)
+    app.logger.critical(f"ERROR CRÍTICO DE CONFIGURACIÓN DE MONGO: {e}")
     sys.exit(1)
 except Exception as e:
-    print(f"❌ ERROR CRÍTICO DE CONEXIÓN DE MONGO: {e}", file=sys.stderr)
+    app.logger.critical(f"ERROR CRÍTICO DE CONEXIÓN DE MONGO: {e}")
     sys.exit(1)
 
 db = client["reclutamiento_db"]
@@ -154,7 +156,7 @@ def rsa_decrypt_string(b64_cipher: str) -> str:
 # EXTRACCIÓN DE TEXTO Y UTILIDADES
 # ------------------------
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return filename and '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_text_from_pdf(path):
     """Extrae texto del PDF para cifrarlo junto con los datos."""
@@ -229,15 +231,10 @@ def _delete_offer_and_postulants_by_id_string(oferta_id_str: str):
     """
     # Primero intentamos interpretar como ObjectId
     oferta = None
-    oid = None
     try:
         oid = ObjectId(oferta_id_str)
         oferta = ofertas_col.find_one({"_id": oid})
     except Exception:
-        oid = None
-
-    if not oferta:
-        # intentamos buscar por string en _id o por campo 'oferta_id' (si guardaste como string)
         oferta = ofertas_col.find_one({"_id": oferta_id_str}) or ofertas_col.find_one({"titulo": {"$regex": re.escape(oferta_id_str), "$options": "i"}})
 
     if not oferta:
@@ -344,6 +341,7 @@ def postular_sin_id():
 @app.route("/postular/<oferta_id>/", methods=["GET", "POST"])
 def postular(oferta_id):
     # Lógica para manejar IDs tipo ObjectId o string
+    oferta = None
     try:
         oid = ObjectId(oferta_id)
         oferta = ofertas_col.find_one({"_id": oid})
@@ -353,66 +351,98 @@ def postular(oferta_id):
     if not oferta:
         abort(404)
 
+    # GET -> render, POST -> procesar
     if request.method == "POST":
-        nombre = request.form.get("nombre", "").strip()
-        correo = request.form.get("correo", "").strip()
-        resumen = request.form.get("resumen", "").strip()
-        fecha_nac_str = request.form.get("fecha_nacimiento", "").strip()
-        file = request.files.get("curriculum")
-
-        if not nombre or not correo or not fecha_nac_str or not file:
-            flash("Faltan campos obligatorios", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
-
         try:
-            fecha_nac = datetime.strptime(fecha_nac_str, "%Y-%m-%d").date()
-        except ValueError:
-            flash("Formato de fecha incorrecto", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
+            nombre = request.form.get("nombre", "").strip()
+            correo = request.form.get("correo", "").strip()
+            resumen = request.form.get("resumen", "").strip()
+            fecha_nac_str = request.form.get("fecha_nacimiento", "").strip()
+            file = request.files.get("curriculum")
 
-        if calculate_age(fecha_nac) < 18:
-            flash("Debes ser mayor de edad para postular", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
+            # Validaciones básicas
+            if not nombre or not correo or not fecha_nac_str or file is None:
+                flash("Faltan campos obligatorios", "danger")
+                return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
 
-        if not allowed_file(file.filename):
-            flash("Solo se permite archivo PDF", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
+            # Fecha
+            try:
+                fecha_nac = datetime.strptime(fecha_nac_str, "%Y-%m-%d").date()
+            except ValueError:
+                flash("Formato de fecha incorrecto", "danger")
+                return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
 
-        orig_filename = secure_filename(file.filename)
-        unique_name = f"{uuid.uuid4().hex}.pdf"
-        save_path = os.path.join(UPLOAD_DIR, unique_name)
-        file.save(save_path)
+            if calculate_age(fecha_nac) < 18:
+                flash("Debes ser mayor de edad para postular", "danger")
+                return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
 
-        extracted_text = extract_text_from_pdf(save_path)
+            # Archivo
+            if not allowed_file(getattr(file, "filename", None)):
+                flash("Solo se permite archivo PDF", "danger")
+                return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
 
-        titulo = oferta.get("titulo", "")
-        descripcion = oferta.get("descripcion", "")
-        match_score = get_neural_network_match_score(titulo, descripcion, resumen, extracted_text)
+            orig_filename = secure_filename(file.filename)
+            unique_name = f"{uuid.uuid4().hex}.pdf"
+            save_path = os.path.join(UPLOAD_DIR, unique_name)
 
-        ensure_keys()
-        hybrid = hybrid_encrypt_text(extracted_text or "Sin texto extraído")
-        filename_enc = rsa_encrypt_string(orig_filename)
-        nombre_enc = rsa_encrypt_string(nombre)
-        correo_enc = rsa_encrypt_string(correo)
-        resumen_enc = rsa_encrypt_string(resumen or "")
+            # Guardado con manejo de errores
+            try:
+                file.save(save_path)
+            except Exception as e:
+                app.logger.exception("Error guardando archivo")
+                flash("Error al guardar el archivo. Intenta nuevamente.", "danger")
+                return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
 
-        nuevo = {
-            "nombre_enc": nombre_enc,
-            "correo_enc": correo_enc,
-            "resumen_enc": resumen_enc,
-            "fecha_nacimiento": fecha_nac.isoformat(),
-            "curriculum_stored_name": unique_name,
-            "curriculum_filename_enc": filename_enc,
-            "curriculum_ciphertext_b64": hybrid["ciphertext_b64"],
-            "curriculum_key_encrypted_b64": hybrid["key_encrypted_b64"],
-            "match_score": match_score,
-            "oferta_id": oferta_id,
-            "_created": datetime.utcnow()
-        }
-        postulantes_col.insert_one(nuevo)
-        flash("Postulación enviada correctamente", "success")
-        return redirect(url_for("listar_ofertas"))
+            # Extraer texto (no crítico)
+            extracted_text = extract_text_from_pdf(save_path)
 
+            titulo = oferta.get("titulo", "")
+            descripcion = oferta.get("descripcion", "")
+            match_score = get_neural_network_match_score(titulo, descripcion, resumen, extracted_text)
+
+            # Cifrado / inserción
+            try:
+                ensure_keys()
+                hybrid = hybrid_encrypt_text(extracted_text or "Sin texto extraído")
+                filename_enc = rsa_encrypt_string(orig_filename)
+                nombre_enc = rsa_encrypt_string(nombre)
+                correo_enc = rsa_encrypt_string(correo)
+                resumen_enc = rsa_encrypt_string(resumen or "")
+
+                nuevo = {
+                    "nombre_enc": nombre_enc,
+                    "correo_enc": correo_enc,
+                    "resumen_enc": resumen_enc,
+                    "fecha_nacimiento": fecha_nac.isoformat(),
+                    "curriculum_stored_name": unique_name,
+                    "curriculum_filename_enc": filename_enc,
+                    "curriculum_ciphertext_b64": hybrid["ciphertext_b64"],
+                    "curriculum_key_encrypted_b64": hybrid["key_encrypted_b64"],
+                    "match_score": match_score,
+                    "oferta_id": oferta_id,
+                    "_created": datetime.utcnow()
+                }
+                postulantes_col.insert_one(nuevo)
+            except Exception as e:
+                app.logger.exception("Error insertando postulante en BD")
+                # intentar eliminar archivo guardado para no dejar basura
+                try:
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                except Exception:
+                    pass
+                flash("Hubo un error interno al procesar la postulación. Intenta más tarde.", "danger")
+                return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
+
+            flash("Postulación enviada correctamente", "success")
+            return redirect(url_for("listar_ofertas"))
+
+        except Exception as e:
+            app.logger.exception("Excepción inesperada en /postular/")
+            flash("Ocurrió un error inesperado. Reintenta.", "danger")
+            return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
+
+    # GET
     return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo', '')}")
 
 # RUTA DE CAPTURA: /postulantes/ (sin id) para evitar 404 en render/frontend
@@ -502,12 +532,10 @@ try:
     ofertas_col.create_index("titulo")
     postulantes_col.create_index("oferta_id")
 except Exception as e:
-    print(f"Advertencia: No se pudieron crear los índices de MongoDB. Error: {e}", file=sys.stderr)
+    app.logger.warning(f"Advertencia: No se pudieron crear los índices de MongoDB. Error: {e}")
 
 # ------------------------
 # MODO LOCAL
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
-
-
