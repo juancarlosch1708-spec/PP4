@@ -421,6 +421,7 @@ def postular(oferta_id):
                 correo_enc = rsa_encrypt_string(correo)
                 resumen_enc = rsa_encrypt_string(resumen or "")
 
+                # <-- CORRECCIÓN: guardar oferta_id siempre como STRING -->
                 nuevo = {
                     "nombre_enc": nombre_enc,
                     "correo_enc": correo_enc,
@@ -431,7 +432,7 @@ def postular(oferta_id):
                     "curriculum_ciphertext_b64": hybrid["ciphertext_b64"],
                     "curriculum_key_encrypted_b64": hybrid["key_encrypted_b64"],
                     "match_score": match_score,
-                    "oferta_id": oferta_id,
+                    "oferta_id": str(oferta.get("_id")),
                     "_created": datetime.utcnow()
                 }
                 postulantes_col.insert_one(nuevo)
@@ -474,7 +475,9 @@ def ver_postulantes(oferta_id):
     if not oferta:
         abort(404)
 
-    postulantes_cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
+    # <-- CORRECCIÓN: buscar postulantes por oferta_id como STRING -->
+    oferta_id_str = str(oferta.get("_id"))
+    postulantes_cursor = postulantes_col.find({"oferta_id": oferta_id_str}).sort("_created", -1)
     postulantes = []
     for p in postulantes_cursor:
         p["_id_str"] = str(p["_id"])
@@ -501,7 +504,8 @@ def exportar_csv_con_datos_cifrados(oferta_id):
     if not oferta:
         abort(404)
 
-    postulantes = list(postulantes_col.find({"oferta_id": oferta_id}))
+    oferta_id_str = str(oferta.get("_id"))
+    postulantes = list(postulantes_col.find({"oferta_id": oferta_id_str}))
 
     output = io.StringIO()
     writer = csv.writer(output)
