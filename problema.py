@@ -63,8 +63,9 @@ def ensure_secret_key():
 ensure_secret_key()
 
 # ------------------------
-# CONEXIÓN A MONGO
+# CONEXIÓN A MONGO (Atlas friendly)
 # ------------------------
+# Usa la variable de entorno MONGO_URI o MONGODB_URI. Si usas Atlas asegúrate de setear MONGO_URI
 MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI") or "mongodb://localhost:27017"
 
 try:
@@ -73,6 +74,7 @@ try:
     else:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 
+    # Verificar conexión
     client.admin.command('ping')
     app.logger.info("✅ Conexión a MongoDB exitosa.")
 
@@ -363,6 +365,9 @@ def postular(oferta_id):
     if not oferta:
         abort(404)
 
+    # Aseguramos que la plantilla reciba _id_str
+    oferta["_id_str"] = str(oferta.get("_id"))
+
     # GET -> render, POST -> procesar
     if request.method == "POST":
         try:
@@ -421,7 +426,7 @@ def postular(oferta_id):
                 correo_enc = rsa_encrypt_string(correo)
                 resumen_enc = rsa_encrypt_string(resumen or "")
 
-                # <-- CORRECCIÓN: guardar oferta_id siempre como STRING -->
+                # Guardar oferta_id como STRING para consistencia en búsquedas
                 nuevo = {
                     "nombre_enc": nombre_enc,
                     "correo_enc": correo_enc,
@@ -466,6 +471,7 @@ def ver_postulantes_sin_id():
 
 @app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
+    # Intentar resolver oferta tanto por ObjectId como por string
     try:
         oid = ObjectId(oferta_id)
         oferta = ofertas_col.find_one({"_id": oid})
@@ -475,13 +481,15 @@ def ver_postulantes(oferta_id):
     if not oferta:
         abort(404)
 
-    # <-- CORRECCIÓN: buscar postulantes por oferta_id como STRING -->
+    # Buscar postulantes por oferta_id string (consistente con inserción)
     oferta_id_str = str(oferta.get("_id"))
     postulantes_cursor = postulantes_col.find({"oferta_id": oferta_id_str}).sort("_created", -1)
     postulantes = []
     for p in postulantes_cursor:
         p["_id_str"] = str(p["_id"])
         postulantes.append(p)
+    # pasar oferta con _id_str para que los templates usen oferta._id_str
+    oferta["_id_str"] = oferta_id_str
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes, title="Postulantes")
 
 @app.route("/descargar_cv/<filename>")
