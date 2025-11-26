@@ -1,19 +1,22 @@
-# problema.py
+# problema_mongo.py
 import os
 import io
 import csv
 import uuid
 import base64
 import re
-import random
 from datetime import datetime, date
+from collections import Counter
 
 from flask import (
     Flask, render_template, request, redirect, url_for, send_file,
     flash, abort, jsonify
 )
-from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
+
+# Base de datos MongoDB
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 # Cryptography
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -40,8 +43,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'reclutamiento.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
 
@@ -55,7 +56,15 @@ def ensure_secret_key():
 
 ensure_secret_key()
 
-db = SQLAlchemy(app)
+# ------------------------
+# CONEXIÓN A MONGO
+# ------------------------
+# URI por defecto a localhost, puede sobrescribirse con variable de entorno MONGO_URI
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+client = MongoClient(MONGO_URI)
+db = client["reclutamiento_db"]
+ofertas_col = db["ofertas"]
+postulantes_col = db["postulantes"]
 
 # ------------------------
 # CLAVES Y CIFRADO
@@ -124,45 +133,7 @@ def rsa_decrypt_string(b64_cipher: str) -> str:
     return pt.decode("utf-8")
 
 # ------------------------
-# INTEGRACIÓN DE RNA / PLN (SIMULADA)
-# ------------------------
-def get_neural_network_match_score(oferta_desc: str, resumen: str, cv_text: str) -> int:
-    """
-    Función SIMULADA de Red Neuronal para generar un score de 0 a 100.
-    """
-    if "python" in cv_text.lower() or "flask" in cv_text.lower() or "django" in cv_text.lower():
-        base_score = random.randint(70, 95)
-    else:
-        base_score = random.randint(30, 65)
-    # Pequeña mezcla con longitud del resumen/oferta
-    length_bonus = min(10, max(0, len(resumen) // 50))
-    return min(100, base_score + length_bonus)
-
-# ------------------------
-# MODELOS DE BASE DE DATOS
-# ------------------------
-class Oferta(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    titulo = db.Column(db.String(120), nullable=False)
-    descripcion = db.Column(db.Text, nullable=False)
-    empresa = db.Column(db.String(100), nullable=False)
-    postulantes = db.relationship('Postulante', backref='oferta', cascade="all, delete-orphan")
-
-class Postulante(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    nombre_enc = db.Column(db.Text, nullable=False)
-    correo_enc = db.Column(db.Text, nullable=False)
-    resumen_enc = db.Column(db.Text, nullable=True)
-    fecha_nacimiento = db.Column(db.Date, nullable=False)
-    curriculum_stored_name = db.Column(db.String(200), nullable=False)
-    curriculum_filename_enc = db.Column(db.Text, nullable=False)
-    curriculum_ciphertext_b64 = db.Column(db.Text, nullable=False)
-    curriculum_key_encrypted_b64 = db.Column(db.Text, nullable=False)
-    match_score = db.Column(db.Integer, nullable=True)
-    oferta_id = db.Column(db.Integer, db.ForeignKey('oferta.id'), nullable=False)
-
-# ------------------------
-# UTILIDADES
+# EXTRACCIÓN DE TEXTO Y UTILIDADES
 # ------------------------
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -183,6 +154,67 @@ def calculate_age(born: date) -> int:
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
 # ------------------------
+# LOGICA DETERMINISTICA DE "RNA" GUIADA POR PALABRAS CLAVE
+# ------------------------
+STOPWORDS = {
+    "de","la","el","y","en","a","los","las","con","para","por","un","una","es","se","su",
+    "que","al","del","como","los","las","empleo","puesto","experiencia"
+}
+
+def extract_keywords(text, min_len=4):
+    """Extrae keywords simples desde un texto (sin librerías externas). Determinístico."""
+    text = re.sub(r"[^\w\s]", " ", text.lower())
+    tokens = [t for t in text.split() if len(t) >= min_len and t not in STOPWORDS and not t.isnumeric()]
+    # devolvemos las palabras con mayor frecuencia
+    counts = Counter(tokens)
+    keywords = [w for w, c in counts.most_common(20)]
+    return keywords
+
+def get_neural_network_match_score(oferta_title: str, oferta_desc: str, resumen: str, cv_text: str) -> int:
+    """
+    Función determinista que calcula un score (0-100) basado en la presencia de palabras clave
+    extraídas de la oferta (título + descripción). No usa random.
+    Lógica:
+      - extrae keywords de la oferta (palabras relevantes)
+      - cuenta incidencias en resumen y cv_text (más peso al CV)
+      - normaliza a 0-100
+    """
+    # Texto fuente para extraer keywords
+    source = f"{oferta_title} {oferta_desc}"
+    keywords = extract_keywords(source)
+    if not keywords:
+        # fallback: palabras técnicas comunes
+        keywords = ["python", "javascript", "sql", "java", "aws", "docker", "flask", "django"]
+
+    # contar coincidencias (ponderadas)
+    resumen_l = (resumen or "").lower()
+    cv_l = (cv_text or "").lower()
+    score_raw = 0.0
+    max_possible = 0.0
+
+    for kw in keywords:
+        # peso: CV 0.7, resumen 0.3
+        max_possible += 1.0  # por keyword consideramos 1 punto máximo
+        count_cv = cv_l.count(kw)
+        count_res = resumen_l.count(kw)
+        # cada aparición cuenta, pero cap por keyword a evitar sesgo extremo
+        contrib = min(3, count_cv) * 0.7 + min(2, count_res) * 0.3
+        # normalizamos contrib para que 1 keyword presente al menos una vez dé valor significativo
+        score_raw += contrib / 3.0  # divisor empírico para normalizar
+
+    # Normalizar en 0..100
+    if max_possible <= 0:
+        normalized = 0.0
+    else:
+        normalized = (score_raw / (max_possible * ( (0.7*3 + 0.3*2) / 3.0 ))) * 100.0
+
+    # Bonus por longitud del resumen (si relevante)
+    length_bonus = min(10, max(0, len(resumen_l) // 100))
+    final_score = int(max(0, min(100, round(normalized) + length_bonus)))
+
+    return final_score
+
+# ------------------------
 # RUTAS
 # ------------------------
 @app.route("/")
@@ -191,7 +223,12 @@ def index():
 
 @app.route("/ofertas")
 def listar_ofertas():
-    ofertas = Oferta.query.order_by(Oferta.id.desc()).all()
+    # obtener ofertas ordenadas por creación (desc)
+    ofertas_cursor = ofertas_col.find().sort("_created", -1)
+    ofertas = []
+    for o in ofertas_cursor:
+        o["_id_str"] = str(o["_id"])
+        ofertas.append(o)
     return render_template("ofertas.html", ofertas=ofertas, title="Ofertas Disponibles")
 
 @app.route("/crear_oferta", methods=["GET", "POST"])
@@ -204,35 +241,59 @@ def crear_oferta():
             flash("Por favor completa todos los campos", "danger")
             return redirect(url_for("crear_oferta"))
 
-        nueva = Oferta(titulo=titulo, descripcion=descripcion, empresa=empresa)
-        db.session.add(nueva)
-        db.session.commit()
+        nueva = {
+            "titulo": titulo,
+            "descripcion": descripcion,
+            "empresa": empresa,
+            "_created": datetime.utcnow()
+        }
+        res = ofertas_col.insert_one(nueva)
         flash("Oferta creada correctamente", "success")
         return redirect(url_for("listar_ofertas"))
 
     return render_template("crear_oferta.html", title="Crear Oferta")
 
-@app.route("/eliminar_oferta/<int:oferta_id>", methods=["POST"])
+@app.route("/eliminar_oferta/<oferta_id>", methods=["POST"])
 def eliminar_oferta(oferta_id):
-    oferta = Oferta.query.get_or_404(oferta_id)
-    files_to_delete = [p.curriculum_stored_name for p in Postulante.query.filter_by(oferta_id=oferta_id).all()]
-    db.session.delete(oferta)
-    db.session.commit()
+    try:
+        oid = ObjectId(oferta_id)
+    except Exception:
+        abort(400)
+    oferta = ofertas_col.find_one({"_id": oid})
+    if not oferta:
+        abort(404)
 
-    for filename in files_to_delete:
-        file_path = os.path.join(UPLOAD_DIR, filename)
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except OSError as e:
-                app.logger.warning(f"No se pudo eliminar {file_path}: {e}")
+    # Buscar postulantes y eliminar archivos
+    postulantes = list(postulantes_col.find({"oferta_id": oferta_id}))
+    for p in postulantes:
+        filename = p.get("curriculum_stored_name")
+        if filename:
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError as e:
+                    app.logger.warning(f"No se pudo eliminar {file_path}: {e}")
+
+    # Eliminar postulantes y oferta
+    post_res = postulantes_col.delete_many({"oferta_id": oferta_id})
+    ofertas_col.delete_one({"_id": oid})
 
     flash("Oferta y sus postulantes eliminados", "success")
     return redirect(url_for("listar_ofertas"))
 
-@app.route("/postular/<int:oferta_id>", methods=["GET", "POST"])
+@app.route("/postular/<oferta_id>", methods=["GET", "POST"])
 def postular(oferta_id):
-    oferta = Oferta.query.get_or_404(oferta_id)
+    try:
+        oid = ObjectId(oferta_id)
+    except Exception:
+        # tal vez el ID fue guardado como string — intentamos buscar por string
+        oferta = ofertas_col.find_one({"_id": oferta_id}) or ofertas_col.find_one({"_id": ObjectId(oferta_id)}) if ObjectId.is_valid(oferta_id) else None
+    else:
+        oferta = ofertas_col.find_one({"_id": oid})
+
+    if not oferta:
+        abort(404)
 
     if request.method == "POST":
         nombre = request.form.get("nombre", "").strip()
@@ -266,8 +327,10 @@ def postular(oferta_id):
 
         extracted_text = extract_text_from_pdf(save_path)
 
-        # --- Lógica de la Red Neuronal (simulada) ---
-        match_score = get_neural_network_match_score(oferta.descripcion, resumen, extracted_text)
+        # --- Lógica "RNA" determinista basada en keywords ---
+        titulo = oferta.get("titulo", "")
+        descripcion = oferta.get("descripcion", "")
+        match_score = get_neural_network_match_score(titulo, descripcion, resumen, extracted_text)
 
         # --- Cifrado e inserción ---
         ensure_keys()
@@ -277,29 +340,35 @@ def postular(oferta_id):
         correo_enc = rsa_encrypt_string(correo)
         resumen_enc = rsa_encrypt_string(resumen or "")
 
-        nuevo = Postulante(
-            nombre_enc=nombre_enc,
-            correo_enc=correo_enc,
-            resumen_enc=resumen_enc,
-            fecha_nacimiento=fecha_nac,
-            curriculum_stored_name=unique_name,
-            curriculum_filename_enc=filename_enc,
-            curriculum_ciphertext_b64=hybrid["ciphertext_b64"],
-            curriculum_key_encrypted_b64=hybrid["key_encrypted_b64"],
-            match_score=match_score,
-            oferta_id=oferta.id
-        )
-        db.session.add(nuevo)
-        db.session.commit()
+        nuevo = {
+            "nombre_enc": nombre_enc,
+            "correo_enc": correo_enc,
+            "resumen_enc": resumen_enc,
+            "fecha_nacimiento": fecha_nac.isoformat(),
+            "curriculum_stored_name": unique_name,
+            "curriculum_filename_enc": filename_enc,
+            "curriculum_ciphertext_b64": hybrid["ciphertext_b64"],
+            "curriculum_key_encrypted_b64": hybrid["key_encrypted_b64"],
+            "match_score": match_score,
+            "oferta_id": oferta_id,
+            "_created": datetime.utcnow()
+        }
+        postulantes_col.insert_one(nuevo)
         flash("Postulación enviada correctamente", "success")
         return redirect(url_for("listar_ofertas"))
 
-    return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.titulo}")
+    return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo', '')}")
 
-@app.route("/postulantes/<int:oferta_id>")
+@app.route("/postulantes/<oferta_id>")
 def ver_postulantes(oferta_id):
-    oferta = Oferta.query.get_or_404(oferta_id)
-    postulantes = Postulante.query.filter_by(oferta_id=oferta.id).all()
+    oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)}) if ObjectId.is_valid(oferta_id) else ofertas_col.find_one({"_id": oferta_id})
+    if not oferta:
+        abort(404)
+    postulantes_cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
+    postulantes = []
+    for p in postulantes_cursor:
+        p["_id_str"] = str(p["_id"])
+        postulantes.append(p)
     # Para mostrar datos no cifrados, necesitarías descifrarlos con la clave privada (solo local)
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes, title="Postulantes")
 
@@ -313,10 +382,12 @@ def descargar_cv(filename):
         abort(404)
     return send_file(file_path, as_attachment=True, download_name=filename)
 
-@app.route("/exportar_csv_con_datos_cifrados/<int:oferta_id>")
+@app.route("/exportar_csv_con_datos_cifrados/<oferta_id>")
 def exportar_csv_con_datos_cifrados(oferta_id):
-    oferta = Oferta.query.get_or_404(oferta_id)
-    postulantes = Postulante.query.filter_by(oferta_id=oferta.id).all()
+    oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)}) if ObjectId.is_valid(oferta_id) else ofertas_col.find_one({"_id": oferta_id})
+    if not oferta:
+        abort(404)
+    postulantes = list(postulantes_col.find({"oferta_id": oferta_id}))
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -329,14 +400,19 @@ def exportar_csv_con_datos_cifrados(oferta_id):
 
     for p in postulantes:
         writer.writerow([
-            p.id, p.nombre_enc, p.correo_enc, p.resumen_enc,
-            p.fecha_nacimiento.isoformat(), p.curriculum_filename_enc,
-            p.curriculum_ciphertext_b64, p.curriculum_key_encrypted_b64,
-            p.match_score
+            str(p.get("_id")),
+            p.get("nombre_enc"),
+            p.get("correo_enc"),
+            p.get("resumen_enc"),
+            p.get("fecha_nacimiento"),
+            p.get("curriculum_filename_enc"),
+            p.get("curriculum_ciphertext_b64"),
+            p.get("curriculum_key_encrypted_b64"),
+            p.get("match_score")
         ])
 
     csv_data = output.getvalue().encode("utf-8")
-    filename_base = re.sub(r'[^a-zA-Z0-9_-]', '_', oferta.titulo)
+    filename_base = re.sub(r'[^a-zA-Z0-9_-]', '_', oferta.get("titulo", "oferta"))
     download_name = f"postulantes_{filename_base}_cifrados.csv"
 
     return send_file(
@@ -347,12 +423,12 @@ def exportar_csv_con_datos_cifrados(oferta_id):
     )
 
 # ------------------------
-# INICIALIZACIÓN GLOBAL (se ejecuta con Gunicorn también)
+# INICIALIZACIÓN GLOBAL
 # ------------------------
-# Aseguramos llaves y tablas SIEMPRE al arrancar la app (importante para Render)
 ensure_keys()
-with app.app_context():
-    db.create_all()
+# creamos índices sencillos para mejor búsqueda (opcionales)
+ofertas_col.create_index("titulo")
+postulantes_col.create_index("oferta_id")
 
 # ------------------------
 # MODO LOCAL
