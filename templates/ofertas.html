@@ -1,33 +1,74 @@
 <!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Ofertas de Trabajo</title>
+background: #f5f5f5;
+margin: 0;
+padding: 20px;
+}
+h1 {
+text-align: center;
+color: #333;
+}
+.card {
+background: white;
+padding: 20px;
+margin: 20px auto;
+width: 80%;
+border-radius: 10px;
+box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+.titulo {
+font-size: 22px;
+font-weight: bold;
+color: #222;
+}
+.descripcion {
+font-size: 15px;
+margin-top: 10px;
+color: #555;
+}
+.botones {
+margin-top: 20px;
+display: flex;
+gap: 10px;
+}
+a.boton, button.boton {
+background: #0066cc;
+color: white;
+padding: 10px 15px;
+text-decoration: none;
+border-radius: 6px;
+font-size: 14px;
+border: none;
+cursor: pointer;
+}
+button.boton.eliminar {
+background: #cc0000;
+}
+a.boton:hover, button.boton:hover {
+opacity: 0.85;
+}
+</style>
 </head>
 <body>
 <h1>Ofertas Disponibles</h1>
 
 
 {% for oferta in ofertas %}
-<div>
-<h3>{{ oferta.puesto }}</h3>
-<p>{{ oferta.descripcion }}</p>
+<div class="card">
+<div class="titulo">{{ oferta.puesto }}</div>
+<div class="descripcion">{{ oferta.descripcion }}</div>
 
 
-<!-- BOTÓN POSTULAR -->
-<a href="{{ url_for('postular', oferta_id=oferta._id_str) }}">Postular</a>
+<div class="botones">
+<a class="boton" href="{{ url_for('postular', oferta_id=oferta._id_str) }}">Postular</a>
+<a class="boton" href="{{ url_for('ver_postulantes', oferta_id=oferta._id_str) }}">Postulantes</a>
 
 
-<!-- BOTÓN VER POSTULANTES -->
-<a href="{{ url_for('ver_postulantes', oferta_id=oferta._id_str) }}">Postulantes</a>
-
-
-<!-- BOTÓN ELIMINAR -->
 <form action="{{ url_for('eliminar_oferta', oferta_id=oferta._id_str) }}" method="POST">
-<button type="submit">Eliminar</button>
+<button class="boton eliminar" type="submit">Eliminar</button>
 </form>
 </div>
-<hr>
+</div>
 {% endfor %}
 </body>
 </html>
+
