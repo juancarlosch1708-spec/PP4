@@ -332,14 +332,26 @@ def eliminar_oferta(oferta_id):
     flash("Oferta y sus postulantes eliminados", "success")
     return redirect(url_for("listar_ofertas"))
 
-# RUTA DE CAPTURA: /postular/ (sin id) para evitar 404 en render/frontend
-@app.route("/postular/")
+# RUTA DE CAPTURA: /postular/ (sin id) para evitar 404/405 en render/frontend
+# ahora acepta GET y POST: si llega POST sin id, redirige con mensaje en vez de 405.
+@app.route("/postular/", methods=["GET", "POST"])
 def postular_sin_id():
+    if request.method == "POST":
+        # recibimos un POST a /postular/ (sin id) -> evitar 405; informar y redirigir
+        flash("No se especificó la oferta al enviar la postulación. Asegúrate de usar el botón 'Postular' desde la página de la oferta.", "warning")
+        return redirect(url_for("listar_ofertas"))
+    # GET normal: redirige a listar_ofertas
     flash("No se especificó una oferta para postular.", "warning")
     return redirect(url_for("listar_ofertas"))
 
-@app.route("/postular/<oferta_id>/", methods=["GET", "POST"])
+# Ruta principal que maneja postulación con oferta_id (acepta con o sin barra final por strict_slashes=False)
+@app.route("/postular/<oferta_id>", methods=["GET", "POST"])
 def postular(oferta_id):
+    # Si oferta_id es vacío o solo espacios, rechazamos
+    if not oferta_id or (isinstance(oferta_id, str) and oferta_id.strip() == ""):
+        flash("ID de oferta inválido.", "warning")
+        return redirect(url_for("listar_ofertas"))
+
     # Lógica para manejar IDs tipo ObjectId o string
     oferta = None
     try:
