@@ -1,14 +1,11 @@
 from pymongo import MongoClient
 import os
 
-# URI para Atlas — se recomienda usar variables de entorno
-MONGO_URI = os.getenv("MONGO_URI")
+uri = os.getenv("MONGO_URI")
 
-if not MONGO_URI:
-    raise ValueError("❌ ERROR: La variable de entorno MONGO_URI no está configurada.")
+print("DEBUG URI:", uri)  # ← agrega esto para ver qué recibe Render
 
-# Conexión al cluster Atlas
-client = MongoClient(MONGO_URI)
+client = MongoClient(uri)
+db = client["test"]  # o la base que uses
 
-# Nombre de la base de datos
-db = client["base_reclutajusto"]  # Cambia el nombre si quieres
+
