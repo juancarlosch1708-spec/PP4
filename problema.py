@@ -65,7 +65,6 @@ ensure_secret_key()
 # ------------------------
 # CONEXIÓN A MONGO (Atlas friendly)
 # ------------------------
-# Usa la variable de entorno MONGO_URI o MONGODB_URI. Si usas Atlas asegúrate de setear MONGO_URI
 MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI") or "mongodb://localhost:27017"
 
 try:
@@ -335,26 +334,21 @@ def eliminar_oferta(oferta_id):
     return redirect(url_for("listar_ofertas"))
 
 # RUTA DE CAPTURA: /postular/ (sin id) para evitar 404/405 en render/frontend
-# ahora acepta GET y POST: si llega POST sin id, redirige con mensaje en vez de 405.
 @app.route("/postular/", methods=["GET", "POST"])
 def postular_sin_id():
     if request.method == "POST":
-        # recibimos un POST a /postular/ (sin id) -> evitar 405; informar y redirigir
         flash("No se especificó la oferta al enviar la postulación. Asegúrate de usar el botón 'Postular' desde la página de la oferta.", "warning")
         return redirect(url_for("listar_ofertas"))
-    # GET normal: redirige a listar_ofertas
     flash("No se especificó una oferta para postular.", "warning")
     return redirect(url_for("listar_ofertas"))
 
 # Ruta principal que maneja postulación con oferta_id (acepta con o sin barra final por strict_slashes=False)
 @app.route("/postular/<oferta_id>", methods=["GET", "POST"])
 def postular(oferta_id):
-    # Si oferta_id es vacío o solo espacios, rechazamos
     if not oferta_id or (isinstance(oferta_id, str) and oferta_id.strip() == ""):
         flash("ID de oferta inválido.", "warning")
         return redirect(url_for("listar_ofertas"))
 
-    # Lógica para manejar IDs tipo ObjectId o string
     oferta = None
     try:
         oid = ObjectId(oferta_id)
@@ -365,10 +359,9 @@ def postular(oferta_id):
     if not oferta:
         abort(404)
 
-    # Aseguramos que la plantilla reciba _id_str
+    # ensure template uses _id_str
     oferta["_id_str"] = str(oferta.get("_id"))
 
-    # GET -> render, POST -> procesar
     if request.method == "POST":
         try:
             nombre = request.form.get("nombre", "").strip()
@@ -405,7 +398,7 @@ def postular(oferta_id):
             # Guardado con manejo de errores
             try:
                 file.save(save_path)
-            except Exception as e:
+            except Exception:
                 app.logger.exception("Error guardando archivo")
                 flash("Error al guardar el archivo. Intenta nuevamente.", "danger")
                 return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
@@ -440,10 +433,10 @@ def postular(oferta_id):
                     "oferta_id": str(oferta.get("_id")),
                     "_created": datetime.utcnow()
                 }
-                postulantes_col.insert_one(nuevo)
-            except Exception as e:
+                res = postulantes_col.insert_one(nuevo)
+                app.logger.info(f"Postulante insertado id={res.inserted_id}")
+            except Exception:
                 app.logger.exception("Error insertando postulante en BD")
-                # intentar eliminar archivo guardado para no dejar basura
                 try:
                     if os.path.exists(save_path):
                         os.remove(save_path)
@@ -455,7 +448,7 @@ def postular(oferta_id):
             flash("Postulación enviada correctamente", "success")
             return redirect(url_for("listar_ofertas"))
 
-        except Exception as e:
+        except Exception:
             app.logger.exception("Excepción inesperada en /postular/")
             flash("Ocurrió un error inesperado. Reintenta.", "danger")
             return render_template("postular.html", oferta=oferta, title=f"Postular a {oferta.get('titulo','')}")
@@ -488,14 +481,36 @@ def ver_postulantes(oferta_id):
     for p in postulantes_cursor:
         p["_id_str"] = str(p["_id"])
         postulantes.append(p)
-    # pasar oferta con _id_str para que los templates usen oferta._id_str
     oferta["_id_str"] = oferta_id_str
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes, title="Postulantes")
 
-@app.route("/descargar_cv/<filename>")
-def descargar_cv(filename):
-    if ".." in filename or filename.startswith("/"):
-        abort(400)
+# Descargar CV: acepta identificador que puede ser nombre de archivo (xxx.pdf) o id de postulante
+@app.route("/descargar_cv/<identifier>")
+def descargar_cv(identifier):
+    # si identifier es un filename que contiene .pdf -> servirlo directamente (seguridad básica)
+    if identifier.lower().endswith(".pdf"):
+        filename = identifier
+        if ".." in filename or filename.startswith("/"):
+            abort(400)
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        if not os.path.exists(file_path):
+            abort(404)
+        return send_file(file_path, as_attachment=True, download_name=filename)
+
+    # en otro caso, tratamos identifier como id de postulante
+    try:
+        pid = ObjectId(identifier)
+        postulante = postulantes_col.find_one({"_id": pid})
+    except Exception:
+        # no ObjectId válido -> buscar por string id
+        postulante = postulantes_col.find_one({"_id": identifier}) or postulantes_col.find_one({"_id_str": identifier})
+
+    if not postulante:
+        abort(404)
+
+    filename = postulante.get("curriculum_stored_name")
+    if not filename:
+        abort(404)
     file_path = os.path.join(UPLOAD_DIR, filename)
     if not os.path.exists(file_path):
         abort(404)
@@ -563,3 +578,4 @@ except Exception as e:
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
+
