@@ -45,7 +45,6 @@ MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
-# templates folder should exist and contain your html files
 os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
 
 app = Flask(__name__)
@@ -77,7 +76,7 @@ try:
     logger.info("Conectado a MongoDB correctamente.")
 except Exception as e:
     logger.exception("Error conectando a MongoDB: %s", e)
-    raise SystemExit("No se pudo conectar a MongoDB. Revisa MONGO_URI y que el servidor esté en ejecución.") from e
+    raise SystemExit("No se pudo conectar a MongoDB.") from e
 
 db = client["reclutamiento_db"]
 ofertas_col = db["ofertas"]
@@ -102,17 +101,12 @@ def ensure_keys():
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             ))
-        logger.info("Llaves RSA generadas.")
 
 def load_public_key():
-    if not os.path.exists(PUBLIC_KEY_PATH):
-        ensure_keys()
     with open(PUBLIC_KEY_PATH, "rb") as f:
         return serialization.load_pem_public_key(f.read())
 
 def load_private_key():
-    if not os.path.exists(PRIVATE_KEY_PATH):
-        ensure_keys()
     with open(PRIVATE_KEY_PATH, "rb") as f:
         return serialization.load_pem_private_key(f.read(), password=None)
 
@@ -120,26 +114,26 @@ def rsa_encrypt_string(s: str) -> str:
     pub = load_public_key()
     ct = pub.encrypt(
         s.encode("utf-8"),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),
-                     algorithm=hashes.SHA256(),
-                     label=None)
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
     )
     return base64.b64encode(ct).decode()
 
 def rsa_decrypt_string(b64_ct: str) -> str:
     priv = load_private_key()
-    try:
-        ct = base64.b64decode(b64_ct)
-        pt = priv.decrypt(
-            ct,
-            padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),
-                         algorithm=hashes.SHA256(),
-                         label=None)
+    ct = base64.b64decode(b64_ct)
+    pt = priv.decrypt(
+        ct,
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
         )
-        return pt.decode("utf-8")
-    except Exception as e:
-        logger.debug("No se pudo desencriptar (posible texto no cifrado o error): %s", e)
-        raise
+    )
+    return pt.decode("utf-8")
 
 # -------------------------
 # UTIL
@@ -158,8 +152,7 @@ def extract_text_from_pdf(path):
                 page_text = ""
             text.append(page_text or "")
         return "".join(text).strip()
-    except Exception as e:
-        logger.exception("Error extrayendo texto de PDF %s: %s", path, e)
+    except Exception:
         return ""
 
 def calculate_age(born: date):
@@ -190,7 +183,6 @@ def _delete_offer_and_postulants_by_id_string(oferta_id):
         ofertas_col.delete_one({"_id": ObjectId(oferta_id)})
         return True, None
     except Exception as e:
-        logger.exception("Error al eliminar oferta/postulantes: %s", e)
         return False, str(e)
 
 # -------------------------
@@ -203,14 +195,10 @@ def index():
 @app.route("/ofertas/")
 def listar_ofertas():
     ofertas = []
-    try:
-        cursor = ofertas_col.find().sort("_created", -1)
-        for o in cursor:
-            o["_id_str"] = str(o["_id"])
-            ofertas.append(o)
-    except Exception as e:
-        logger.exception("Error listando ofertas: %s", e)
-        flash("Error al listar ofertas.", "danger")
+    cursor = ofertas_col.find().sort("_created", -1)
+    for o in cursor:
+        o["_id_str"] = str(o["_id"])
+        ofertas.append(o)
     return render_template("ofertas.html", ofertas=ofertas)
 
 @app.route("/crear_oferta/", methods=["GET","POST"])
@@ -230,44 +218,33 @@ def crear_oferta():
             "empresa": empresa,
             "_created": datetime.utcnow()
         }
-        try:
-            ofertas_col.insert_one(nueva)
-            flash("Oferta creada", "success")
-        except Exception as e:
-            logger.exception("Error creando oferta: %s", e)
-            flash("No se pudo crear la oferta.", "danger")
+
+        ofertas_col.insert_one(nueva)
+        flash("Oferta creada", "success")
         return redirect(url_for("listar_ofertas"))
+
     return render_template("crear_oferta.html")
 
 @app.route("/eliminar_oferta/<oferta_id>", methods=["POST"])
 def eliminar_oferta(oferta_id):
     ok, err = _delete_offer_and_postulants_by_id_string(oferta_id)
-    if ok:
-        flash("Oferta eliminada", "success")
-    else:
-        flash(f"Error eliminando oferta: {err}", "danger")
+    flash("Oferta eliminada" if ok else f"Error: {err}", "danger" if not ok else "success")
     return redirect(url_for("listar_ofertas"))
 
-# POST to /postular/ (no id) will redirect preserving method to /postular/<id>
-@app.route("/postular/", methods=["GET","POST"])
+# 🔥 CORREGIDO: si llega sin ID, redirige con 307
+@app.route("/postular/", methods=["POST"])
 def postular_root():
-    if request.method == "GET":
-        flash("Selecciona una oferta antes de postular.", "warning")
-        return redirect(url_for("listar_ofertas"))
-
-    oferta_id = request.form.get("oferta_id") or request.args.get("oferta_id")
+    oferta_id = request.form.get("oferta_id")
     if not oferta_id:
         flash("No se recibió el identificador de la oferta.", "danger")
         return redirect(url_for("listar_ofertas"))
-    # Redirect with 307 to preserve POST
     return redirect(url_for("postular", oferta_id=oferta_id), code=307)
 
 @app.route("/postular/<oferta_id>", methods=["GET","POST"])
 def postular(oferta_id):
     try:
         oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
-    except Exception as e:
-        logger.exception("ID oferta inválido: %s", e)
+    except:
         oferta = None
 
     if not oferta:
@@ -280,183 +257,82 @@ def postular(oferta_id):
         f_nac = request.form.get("fecha_nacimiento", "").strip()
         archivo = request.files.get("curriculum")
 
-        if not nombre or not correo or not resumen or not f_nac:
-            flash("Completa todos los campos requeridos.", "danger")
+        if not (nombre and correo and resumen and f_nac):
+            flash("Completa todos los campos", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         try:
             fecha_nac = datetime.strptime(f_nac, "%Y-%m-%d").date()
-        except Exception:
-            flash("Formato de fecha inválido. Usa YYYY-MM-DD.", "danger")
+        except:
+            flash("Fecha inválida", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         if calculate_age(fecha_nac) < 18:
-            flash("Debes ser mayor de edad para postular", "danger")
+            flash("Debes ser mayor de edad", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
-        if archivo is None or not archivo.filename:
-            flash("Adjunta tu curriculum en formato PDF.", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
-
-        if not allowed_file(archivo.filename):
-            flash("Solo se permiten archivos PDF.", "danger")
+        if not archivo or not allowed_file(archivo.filename):
+            flash("Adjunta un PDF válido", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         original_filename = secure_filename(archivo.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
         path = os.path.join(UPLOAD_DIR, unique_name)
-        try:
-            archivo.save(path)
-        except Exception as e:
-            logger.exception("Error guardando archivo: %s", e)
-            flash("Error guardando el curriculum.", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
+        archivo.save(path)
 
         extracted = extract_text_from_pdf(path)
         score = get_neural_network_match_score(
-            oferta.get("titulo", ""), oferta.get("descripcion", ""), resumen, extracted
+            oferta["titulo"], oferta["descripcion"], resumen, extracted
         )
 
-        try:
-            ensure_keys()
-        except Exception as e:
-            logger.exception("Error al asegurar llaves: %s", e)
-            flash("Error interno (llaves de cifrado).", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
+        ensure_keys()
 
-        try:
-            nuevo = {
-                "nombre_enc": rsa_encrypt_string(nombre),
-                "correo_enc": rsa_encrypt_string(correo),
-                "resumen_enc": rsa_encrypt_string(resumen),
-                "fecha_nacimiento": fecha_nac.isoformat(),
-                "curriculum_stored_name": unique_name,
-                "curriculum_filename_enc": rsa_encrypt_string(original_filename),
-                "match_score": score,
-                "oferta_id": oferta_id,
-                "_created": datetime.utcnow()
-            }
+        nuevo = {
+            "nombre_enc": rsa_encrypt_string(nombre),
+            "correo_enc": rsa_encrypt_string(correo),
+            "resumen_enc": rsa_encrypt_string(resumen),
+            "fecha_nacimiento": fecha_nac.isoformat(),
+            "curriculum_stored_name": unique_name,
+            "curriculum_filename_enc": rsa_encrypt_string(original_filename),
+            "match_score": score,
+            "oferta_id": oferta_id,
+            "_created": datetime.utcnow()
+        }
 
-            postulantes_col.insert_one(nuevo)
-            flash("Postulación enviada correctamente", "success")
-            return redirect(url_for("listar_ofertas"))
-        except Exception as e:
-            logger.exception("Error insertando postulante: %s", e)
-            flash("No se pudo guardar la postulación.", "danger")
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
-            return redirect(url_for("postular", oferta_id=oferta_id))
+        postulantes_col.insert_one(nuevo)
+        flash("Postulación enviada", "success")
+        return redirect(url_for("listar_ofertas"))
 
     return render_template("postular.html", oferta=oferta)
 
 @app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
-    try:
-        oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
-    except Exception as e:
-        logger.exception("ID oferta inválido al ver postulantes: %s", e)
-        oferta = None
-
+    oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
     if not oferta:
         abort(404)
 
-    postulantes = []
-    try:
-        cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
-        for p in cursor:
-            p["_id_str"] = str(p["_id"])
-            postulantes.append(p)
-    except Exception as e:
-        logger.exception("Error listando postulantes: %s", e)
-        flash("Error al obtener postulantes.", "danger")
-
+    postulantes = list(postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1))
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
-@app.route("/exportar_csv_con_datos_cifrados/<oferta_id>/")
-def exportar_csv_con_datos_cifrados(oferta_id):
-    try:
-        oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
-    except Exception as e:
-        logger.exception("ID oferta inválido en exportar CSV: %s", e)
-        oferta = None
-
-    if not oferta:
-        abort(404)
-
-    output = io.StringIO()
-    try:
-        cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
-        headers = ["nombre", "correo", "resumen", "fecha_nacimiento", "curriculum_stored_name", "match_score", "_created", "_id"]
-        writer = csv.writer(output)
-        writer.writerow(headers)
-        for p in cursor:
-            def try_decrypt(val):
-                if not val:
-                    return ""
-                try:
-                    return rsa_decrypt_string(val)
-                except Exception:
-                    return val or ""
-            nombre = try_decrypt(p.get("nombre_enc"))
-            correo = try_decrypt(p.get("correo_enc"))
-            resumen = try_decrypt(p.get("resumen_enc"))
-            fecha_nac = p.get("fecha_nacimiento", "")
-            curriculum_stored = p.get("curriculum_stored_name", "")
-            match = p.get("match_score", "")
-            created = p.get("_created", "")
-            _id = str(p.get("_id", ""))
-            writer.writerow([nombre, correo, resumen, fecha_nac, curriculum_stored, match, created, _id])
-    except Exception as e:
-        logger.exception("Error generando CSV: %s", e)
-        flash("Error al generar CSV.", "danger")
-        return redirect(url_for("ver_postulantes", oferta_id=oferta_id))
-
-    mem = io.BytesIO()
-    mem.write(output.getvalue().encode("utf-8"))
-    mem.seek(0)
-    filename = f"postulantes_oferta_{oferta_id}.csv"
-    return send_file(mem, mimetype="text/csv", as_attachment=True, download_name=filename)
-
-# ---------------------------------------------------------
-# RUTA QUE FALTABA: DESCARGAR CV
-# ---------------------------------------------------------
 @app.route("/descargar_cv/<postulante_id>")
 def descargar_cv(postulante_id):
-    try:
-        p = postulantes_col.find_one({"_id": ObjectId(postulante_id)})
-    except Exception:
-        abort(404)
-
+    p = postulantes_col.find_one({"_id": ObjectId(postulante_id)})
     if not p:
         abort(404)
 
-    filename = p.get("curriculum_stored_name")
-    if not filename:
-        abort(404)
-
+    filename = p["curriculum_stored_name"]
     path = os.path.join(UPLOAD_DIR, filename)
 
     if not os.path.exists(path):
         abort(404)
 
-    # El nombre de descarga será el nombre original cifrado si deseas decodificar (aquí devolvemos el archivo tal cual)
-    try:
-        return send_file(path, as_attachment=True, download_name=filename)
-    except Exception as e:
-        logger.exception("Error enviando archivo: %s", e)
-        abort(500)
+    return send_file(path, as_attachment=True, download_name=filename)
 
 # -------------------------
 # START
 # -------------------------
 if __name__ == "__main__":
-    try:
-        ensure_keys()
-    except Exception as e:
-        logger.exception("Error generando/cargando llaves: %s", e)
+    ensure_keys()
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=True)
 
