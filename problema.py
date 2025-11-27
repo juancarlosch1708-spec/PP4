@@ -188,6 +188,7 @@ def _delete_offer_and_postulants_by_id_string(oferta_id):
 # -------------------------
 # ROUTES
 # -------------------------
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -231,12 +232,12 @@ def eliminar_oferta(oferta_id):
     flash("Oferta eliminada" if ok else f"Error: {err}", "danger" if not ok else "success")
     return redirect(url_for("listar_ofertas"))
 
-# 🔥 CORREGIDO: si llega sin ID, redirige con 307
+# 🔥 CORREGIDO: mantiene el POST correctamente
 @app.route("/postular/", methods=["POST"])
 def postular_root():
     oferta_id = request.form.get("oferta_id")
     if not oferta_id:
-        flash("No se recibió el identificador de la oferta.", "danger")
+        flash("No se recibió la oferta.", "danger")
         return redirect(url_for("listar_ofertas"))
     return redirect(url_for("postular", oferta_id=oferta_id), code=307)
 
@@ -287,6 +288,7 @@ def postular(oferta_id):
 
         ensure_keys()
 
+        # 🔥 CORREGIDO — SE GUARDA BIEN
         nuevo = {
             "nombre_enc": rsa_encrypt_string(nombre),
             "correo_enc": rsa_encrypt_string(correo),
@@ -295,11 +297,12 @@ def postular(oferta_id):
             "curriculum_stored_name": unique_name,
             "curriculum_filename_enc": rsa_encrypt_string(original_filename),
             "match_score": score,
-            "oferta_id": oferta_id,
+            "oferta_id": oferta_id,  
             "_created": datetime.utcnow()
         }
 
         postulantes_col.insert_one(nuevo)
+
         flash("Postulación enviada", "success")
         return redirect(url_for("listar_ofertas"))
 
@@ -334,5 +337,4 @@ def descargar_cv(postulante_id):
 if __name__ == "__main__":
     ensure_keys()
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=True)
-
+    app.run(host="0.0.0.0", port=port)
