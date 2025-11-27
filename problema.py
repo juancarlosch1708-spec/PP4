@@ -1,11 +1,8 @@
-# problema_mongo.py
+# app.py
 import os
-import io
-import csv
 import uuid
 import base64
 import re
-import sys
 import logging
 from datetime import datetime, date
 from collections import Counter
@@ -19,7 +16,7 @@ from werkzeug.utils import secure_filename
 # MongoDB
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-from bson.objectid import ObjectId
+from bson.objectid import ObjectId, InvalidId
 
 # Cryptography
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -45,7 +42,7 @@ MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
-os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)  # si usas templates locales
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -103,10 +100,14 @@ def ensure_keys():
             ))
 
 def load_public_key():
+    if not os.path.exists(PUBLIC_KEY_PATH):
+        ensure_keys()
     with open(PUBLIC_KEY_PATH, "rb") as f:
         return serialization.load_pem_public_key(f.read())
 
 def load_private_key():
+    if not os.path.exists(PRIVATE_KEY_PATH):
+        ensure_keys()
     with open(PRIVATE_KEY_PATH, "rb") as f:
         return serialization.load_pem_private_key(f.read(), password=None)
 
@@ -177,18 +178,27 @@ def get_neural_network_match_score(t, d, r, cv):
 # -------------------------
 # HELPERS
 # -------------------------
-def _delete_offer_and_postulants_by_id_string(oferta_id):
+def _delete_offer_and_postulants_by_id_string(oferta_id_str):
     try:
-        postulantes_col.delete_many({"oferta_id": oferta_id})
-        ofertas_col.delete_one({"_id": ObjectId(oferta_id)})
+        oid = ObjectId(oferta_id_str)
+    except Exception as e:
+        return False, f"ID inválido: {e}"
+    try:
+        postulantes_col.delete_many({"oferta_id": oid})
+        ofertas_col.delete_one({"_id": oid})
         return True, None
     except Exception as e:
         return False, str(e)
 
+def to_objectid(s):
+    try:
+        return ObjectId(s)
+    except (InvalidId, TypeError):
+        return None
+
 # -------------------------
 # ROUTES
 # -------------------------
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -232,22 +242,23 @@ def eliminar_oferta(oferta_id):
     flash("Oferta eliminada" if ok else f"Error: {err}", "danger" if not ok else "success")
     return redirect(url_for("listar_ofertas"))
 
-# 🔥 CORREGIDO: mantiene el POST correctamente
+# Si el formulario manda solo oferta_id a /postular/ lo redirigimos a la ruta con id
 @app.route("/postular/", methods=["POST"])
 def postular_root():
     oferta_id = request.form.get("oferta_id")
     if not oferta_id:
         flash("No se recibió la oferta.", "danger")
         return redirect(url_for("listar_ofertas"))
-    return redirect(url_for("postular", oferta_id=oferta_id), code=307)
+    # redirigimos a la página de postulación (GET) donde el usuario completa los datos
+    return redirect(url_for("postular", oferta_id=oferta_id))
 
 @app.route("/postular/<oferta_id>", methods=["GET","POST"])
 def postular(oferta_id):
-    try:
-        oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
-    except:
-        oferta = None
+    oid = to_objectid(oferta_id)
+    if oid is None:
+        abort(404)
 
+    oferta = ofertas_col.find_one({"_id": oid})
     if not oferta:
         abort(404)
 
@@ -264,31 +275,40 @@ def postular(oferta_id):
 
         try:
             fecha_nac = datetime.strptime(f_nac, "%Y-%m-%d").date()
-        except:
-            flash("Fecha inválida", "danger")
+        except Exception:
+            flash("Fecha inválida (formato YYYY-MM-DD)", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         if calculate_age(fecha_nac) < 18:
             flash("Debes ser mayor de edad", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
-        if not archivo or not allowed_file(archivo.filename):
+        if not archivo or archivo.filename == "":
             flash("Adjunta un PDF válido", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
+
+        if not allowed_file(archivo.filename):
+            flash("Sólo se permiten archivos PDF", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         original_filename = secure_filename(archivo.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
-        path = os.path.join(UPLOAD_DIR, unique_name)
-        archivo.save(path)
+        path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
+        try:
+            archivo.save(path)
+        except Exception as e:
+            logger.exception("Error guardando archivo: %s", e)
+            flash("Error guardando el archivo. Intenta de nuevo.", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
 
         extracted = extract_text_from_pdf(path)
         score = get_neural_network_match_score(
-            oferta["titulo"], oferta["descripcion"], resumen, extracted
+            oferta.get("titulo", ""), oferta.get("descripcion", ""), resumen, extracted
         )
 
         ensure_keys()
 
-        # 🔥 CORREGIDO — SE GUARDA BIEN
+        # Guardamos oferta_id como ObjectId para que las consultas sean consistentes
         nuevo = {
             "nombre_enc": rsa_encrypt_string(nombre),
             "correo_enc": rsa_encrypt_string(correo),
@@ -297,35 +317,62 @@ def postular(oferta_id):
             "curriculum_stored_name": unique_name,
             "curriculum_filename_enc": rsa_encrypt_string(original_filename),
             "match_score": score,
-            "oferta_id": oferta_id,  
+            "oferta_id": oid,   # <-- ahora es ObjectId
             "_created": datetime.utcnow()
         }
 
-        postulantes_col.insert_one(nuevo)
+        try:
+            postulantes_col.insert_one(nuevo)
+        except Exception as e:
+            logger.exception("Error insertando postulante: %s", e)
+            flash("Error guardando la postulación. Intenta de nuevo.", "danger")
+            # intentar limpiar archivo guardado
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            return redirect(url_for("postular", oferta_id=oferta_id))
 
         flash("Postulación enviada", "success")
         return redirect(url_for("listar_ofertas"))
 
+    # GET -> mostrar formulario de postulación
     return render_template("postular.html", oferta=oferta)
 
 @app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
-    oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
+    oid = to_objectid(oferta_id)
+    if oid is None:
+        abort(404)
+    oferta = ofertas_col.find_one({"_id": oid})
     if not oferta:
         abort(404)
 
-    postulantes = list(postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1))
+    # buscamos por ObjectId
+    postulantes_cursor = postulantes_col.find({"oferta_id": oid}).sort("_created", -1)
+    postulantes = []
+    for p in postulantes_cursor:
+        # agregamos campo _id_str y si quieres desencriptar aquí puedes hacerlo
+        p["_id_str"] = str(p["_id"])
+        postulantes.append(p)
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
 @app.route("/descargar_cv/<postulante_id>")
 def descargar_cv(postulante_id):
-    p = postulantes_col.find_one({"_id": ObjectId(postulante_id)})
+    try:
+        pid = ObjectId(postulante_id)
+    except Exception:
+        abort(404)
+    p = postulantes_col.find_one({"_id": pid})
     if not p:
         abort(404)
 
-    filename = p["curriculum_stored_name"]
-    path = os.path.join(UPLOAD_DIR, filename)
+    filename = p.get("curriculum_stored_name")
+    if not filename:
+        abort(404)
 
+    path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     if not os.path.exists(path):
         abort(404)
 
