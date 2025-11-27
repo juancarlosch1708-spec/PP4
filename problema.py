@@ -1,4 +1,5 @@
 # app.py
+
 import os
 import uuid
 import base64
@@ -6,10 +7,9 @@ import re
 import logging
 from datetime import datetime, date
 from collections import Counter
-
 from flask import (
-    Flask, render_template, request, redirect, url_for, send_file,
-    flash, abort
+    Flask, render_template, request, redirect, url_for,
+    send_file, flash, abort
 )
 from werkzeug.utils import secure_filename
 
@@ -37,12 +37,13 @@ KEYS_DIR = os.path.join(BASE_DIR, "keys")
 PRIVATE_KEY_PATH = os.path.join(KEYS_DIR, "private_key.pem")
 PUBLIC_KEY_PATH = os.path.join(KEYS_DIR, "public_key.pem")
 SECRET_KEY_PATH = os.path.join(BASE_DIR, "secret_key.txt")
+
 ALLOWED_EXTENSIONS = {"pdf"}
 MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
-os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)  # si usas templates locales
+os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -86,12 +87,14 @@ def ensure_keys():
     if not (os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH)):
         logger.info("Generando par de llaves RSA...")
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
         with open(PRIVATE_KEY_PATH, "wb") as f:
             f.write(private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=serialization.NoEncryption()
             ))
+
         public_key = private_key.public_key()
         with open(PUBLIC_KEY_PATH, "wb") as f:
             f.write(public_key.public_bytes(
@@ -170,9 +173,11 @@ def extract_keywords(text, min_len=4):
 
 def get_neural_network_match_score(t, d, r, cv):
     kws = extract_keywords((t or "")+" "+(d or "")+" "+(r or "")+" "+(cv or "")) or ["python","sql","docker"]
-    score=0
+
+    score = 0
     for kw in kws:
         score += (t or "").lower().count(kw) + (d or "").lower().count(kw) + (r or "").lower().count(kw) + (cv or "").lower().count(kw)
+
     return min(100, score*5)
 
 # -------------------------
@@ -183,6 +188,7 @@ def _delete_offer_and_postulants_by_id_string(oferta_id_str):
         oid = ObjectId(oferta_id_str)
     except Exception as e:
         return False, f"ID inválido: {e}"
+
     try:
         postulantes_col.delete_many({"oferta_id": oid})
         ofertas_col.delete_one({"_id": oid})
@@ -229,8 +235,8 @@ def crear_oferta():
             "empresa": empresa,
             "_created": datetime.utcnow()
         }
-
         ofertas_col.insert_one(nueva)
+
         flash("Oferta creada", "success")
         return redirect(url_for("listar_ofertas"))
 
@@ -242,14 +248,12 @@ def eliminar_oferta(oferta_id):
     flash("Oferta eliminada" if ok else f"Error: {err}", "danger" if not ok else "success")
     return redirect(url_for("listar_ofertas"))
 
-# Si el formulario manda solo oferta_id a /postular/ lo redirigimos a la ruta con id
 @app.route("/postular/", methods=["POST"])
 def postular_root():
     oferta_id = request.form.get("oferta_id")
     if not oferta_id:
         flash("No se recibió la oferta.", "danger")
         return redirect(url_for("listar_ofertas"))
-    # redirigimos a la página de postulación (GET) donde el usuario completa los datos
     return redirect(url_for("postular", oferta_id=oferta_id))
 
 @app.route("/postular/<oferta_id>", methods=["GET","POST"])
@@ -294,6 +298,7 @@ def postular(oferta_id):
         original_filename = secure_filename(archivo.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
         path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
+
         try:
             archivo.save(path)
         except Exception as e:
@@ -302,13 +307,16 @@ def postular(oferta_id):
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         extracted = extract_text_from_pdf(path)
+
         score = get_neural_network_match_score(
-            oferta.get("titulo", ""), oferta.get("descripcion", ""), resumen, extracted
+            oferta.get("titulo", ""),
+            oferta.get("descripcion", ""),
+            resumen,
+            extracted
         )
 
         ensure_keys()
 
-        # Guardamos oferta_id como ObjectId para que las consultas sean consistentes
         nuevo = {
             "nombre_enc": rsa_encrypt_string(nombre),
             "correo_enc": rsa_encrypt_string(correo),
@@ -317,7 +325,7 @@ def postular(oferta_id):
             "curriculum_stored_name": unique_name,
             "curriculum_filename_enc": rsa_encrypt_string(original_filename),
             "match_score": score,
-            "oferta_id": oid,   # <-- ahora es ObjectId
+            "oferta_id": oid,
             "_created": datetime.utcnow()
         }
 
@@ -326,7 +334,6 @@ def postular(oferta_id):
         except Exception as e:
             logger.exception("Error insertando postulante: %s", e)
             flash("Error guardando la postulación. Intenta de nuevo.", "danger")
-            # intentar limpiar archivo guardado
             try:
                 if os.path.exists(path):
                     os.remove(path)
@@ -337,7 +344,6 @@ def postular(oferta_id):
         flash("Postulación enviada", "success")
         return redirect(url_for("listar_ofertas"))
 
-    # GET -> mostrar formulario de postulación
     return render_template("postular.html", oferta=oferta)
 
 @app.route("/postulantes/<oferta_id>/")
@@ -345,17 +351,18 @@ def ver_postulantes(oferta_id):
     oid = to_objectid(oferta_id)
     if oid is None:
         abort(404)
+
     oferta = ofertas_col.find_one({"_id": oid})
     if not oferta:
         abort(404)
 
-    # buscamos por ObjectId
     postulantes_cursor = postulantes_col.find({"oferta_id": oid}).sort("_created", -1)
+
     postulantes = []
     for p in postulantes_cursor:
-        # agregamos campo _id_str y si quieres desencriptar aquí puedes hacerlo
         p["_id_str"] = str(p["_id"])
         postulantes.append(p)
+
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
 @app.route("/descargar_cv/<postulante_id>")
@@ -364,6 +371,7 @@ def descargar_cv(postulante_id):
         pid = ObjectId(postulante_id)
     except Exception:
         abort(404)
+
     p = postulantes_col.find_one({"_id": pid})
     if not p:
         abort(404)
@@ -373,10 +381,50 @@ def descargar_cv(postulante_id):
         abort(404)
 
     path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
     if not os.path.exists(path):
         abort(404)
 
     return send_file(path, as_attachment=True, download_name=filename)
+
+# -------------------------
+# RUTA NUEVA: EXPORTAR CSV CON DATOS CIFRADOS
+# -------------------------
+
+@app.route("/exportar_csv_con_datos_cifrados/<oferta_id>")
+def exportar_csv_con_datos_cifrados(oferta_id):
+    oid = to_objectid(oferta_id)
+    if oid is None:
+        abort(404)
+
+    postulantes = list(postulantes_col.find({"oferta_id": oid}))
+
+    import csv
+    from io import StringIO, BytesIO
+
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["nombre_enc", "correo_enc", "resumen_enc", "fecha_nacimiento", "match_score"])
+
+    for p in postulantes:
+        writer.writerow([
+            p.get("nombre_enc"),
+            p.get("correo_enc"),
+            p.get("resumen_enc"),
+            p.get("fecha_nacimiento"),
+            p.get("match_score")
+        ])
+
+    mem = BytesIO()
+    mem.write(output.getvalue().encode("utf-8"))
+    mem.seek(0)
+
+    return send_file(
+        mem,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="postulantes_cifrados.csv"
+    )
 
 # -------------------------
 # START
