@@ -44,6 +44,7 @@ MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)  # no hace daño
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -128,10 +129,6 @@ def rsa_encrypt_string(s: str) -> str:
     return base64.b64encode(ct).decode()
 
 def rsa_decrypt_string(b64_ct: str) -> str:
-    """
-    Intenta desencriptar una cadena base64 con la clave privada.
-    Si falla, lanza excepción hacia quien lo invoque.
-    """
     priv = load_private_key()
     try:
         ct = base64.b64decode(b64_ct)
@@ -253,11 +250,29 @@ def eliminar_oferta(oferta_id):
         flash(f"Error eliminando oferta: {err}", "danger")
     return redirect(url_for("listar_ofertas"))
 
-# Si alguien llega a /postular/ sin id, redirigir a listar_ofertas en vez de 404
-@app.route("/postular/")
-def postular_sin_id():
-    flash("Selecciona una oferta antes de postular.", "warning")
-    return redirect(url_for("listar_ofertas"))
+# Si alguien llega a /postular/ sin id por GET -> redirigir a listar_ofertas
+@app.route("/postular/", methods=["GET", "POST"])
+def postular_root():
+    """
+    Este endpoint acepta POSTs cuando el formulario
+    envía a /postular/ (sin id). Espera un campo hidden 'oferta_id'
+    para reenviar al endpoint con id, o procesa si se prefiere.
+    Si llega por GET redirige a listar_ofertas.
+    """
+    if request.method == "GET":
+        flash("Selecciona una oferta antes de postular.", "warning")
+        return redirect(url_for("listar_ofertas"))
+
+    # POST: intentar tomar oferta_id desde form y redirigir al endpoint correcto
+    oferta_id = request.form.get("oferta_id") or request.args.get("oferta_id")
+    if not oferta_id:
+        # no tenemos id: devolver 400/redirect
+        flash("No se recibió el identificador de la oferta.", "danger")
+        return redirect(url_for("listar_ofertas"))
+    # reenviar la petición POST al endpoint con id:
+    return redirect(url_for("postular", oferta_id=oferta_id), code=307)
+    # code=307 preserva método POST en la redirección para que la ruta
+    # /postular/<oferta_id> lo procese como POST.
 
 # -----------------------------------------------------
 # POSTULAR
@@ -382,8 +397,6 @@ def ver_postulantes(oferta_id):
 
 # -----------------------------------------------------
 # EXPORTAR CSV (desencripta cuando es posible)
-# Esto corresponde al nombre de endpoint que tu template espera:
-# url_for('exportar_csv_con_datos_cifrados', oferta_id=oferta._id_str)
 # -----------------------------------------------------
 @app.route("/exportar_csv_con_datos_cifrados/<oferta_id>/")
 def exportar_csv_con_datos_cifrados(oferta_id):
@@ -398,29 +411,20 @@ def exportar_csv_con_datos_cifrados(oferta_id):
 
     # construir CSV en memoria
     output = io.StringIO()
-    writer = None
     try:
         cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
-        # cabeceras
         headers = ["nombre", "correo", "resumen", "fecha_nacimiento", "curriculum_stored_name", "match_score", "_created", "_id"]
-        writer = csv_writer = None
         import csv
         writer = csv.writer(output)
         writer.writerow(headers)
         for p in cursor:
-            # intentar desencriptar, si falla dejar campo vacio o el valor original
             def try_decrypt(val):
                 if not val:
                     return ""
                 try:
                     return rsa_decrypt_string(val)
                 except Exception:
-                    # si no está cifrado o hay problema, devolver el valor tal cual (o vacío)
-                    try:
-                        return val
-                    except Exception:
-                        return ""
-
+                    return val or ""
             nombre = try_decrypt(p.get("nombre_enc"))
             correo = try_decrypt(p.get("correo_enc"))
             resumen = try_decrypt(p.get("resumen_enc"))
