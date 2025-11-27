@@ -1,6 +1,7 @@
 # problema_mongo.py
 import os
 import io
+import csv
 import uuid
 import base64
 import re
@@ -11,7 +12,7 @@ from collections import Counter
 
 from flask import (
     Flask, render_template, request, redirect, url_for, send_file,
-    flash, abort, jsonify
+    flash, abort
 )
 from werkzeug.utils import secure_filename
 
@@ -27,9 +28,9 @@ from cryptography.hazmat.primitives import serialization, hashes
 # PDF extractor
 from PyPDF2 import PdfReader
 
-# -----------------------------------------------------
-# CONFIGURACIÓN GENERAL
-# -----------------------------------------------------
+# -------------------------
+# CONFIG
+# -------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -44,11 +45,11 @@ MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(KEYS_DIR, exist_ok=True)
-os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)  # no hace daño
+# templates folder should exist and contain your html files
+os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
-
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
 
@@ -62,9 +63,9 @@ def ensure_secret_key():
 
 ensure_secret_key()
 
-# -----------------------------------------------------
-# MONGO BD
-# -----------------------------------------------------
+# -------------------------
+# MONGO
+# -------------------------
 MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI") or "mongodb://localhost:27017"
 
 try:
@@ -82,13 +83,10 @@ db = client["reclutamiento_db"]
 ofertas_col = db["ofertas"]
 postulantes_col = db["postulantes"]
 
-# -----------------------------------------------------
-# CIFRADO
-# -----------------------------------------------------
+# -------------------------
+# KEYS / RSA
+# -------------------------
 def ensure_keys():
-    """
-    Crea un par de llaves RSA si no existen.
-    """
     if not (os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH)):
         logger.info("Generando par de llaves RSA...")
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -143,9 +141,9 @@ def rsa_decrypt_string(b64_ct: str) -> str:
         logger.debug("No se pudo desencriptar (posible texto no cifrado o error): %s", e)
         raise
 
-# -----------------------------------------------------
-# UTILIDADES
-# -----------------------------------------------------
+# -------------------------
+# UTIL
+# -------------------------
 def allowed_file(filename):
     return bool(filename) and '.' in filename and filename.rsplit(".",1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -183,9 +181,9 @@ def get_neural_network_match_score(t, d, r, cv):
         score += (t or "").lower().count(kw) + (d or "").lower().count(kw) + (r or "").lower().count(kw) + (cv or "").lower().count(kw)
     return min(100, score*5)
 
-# -----------------------------------------------------
-# BORRAR OFERTA + POSTULANTES
-# -----------------------------------------------------
+# -------------------------
+# HELPERS
+# -------------------------
 def _delete_offer_and_postulants_by_id_string(oferta_id):
     try:
         postulantes_col.delete_many({"oferta_id": oferta_id})
@@ -195,9 +193,9 @@ def _delete_offer_and_postulants_by_id_string(oferta_id):
         logger.exception("Error al eliminar oferta/postulantes: %s", e)
         return False, str(e)
 
-# -----------------------------------------------------
-# RUTAS
-# -----------------------------------------------------
+# -------------------------
+# ROUTES
+# -------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -250,36 +248,22 @@ def eliminar_oferta(oferta_id):
         flash(f"Error eliminando oferta: {err}", "danger")
     return redirect(url_for("listar_ofertas"))
 
-# Si alguien llega a /postular/ sin id por GET -> redirigir a listar_ofertas
-@app.route("/postular/", methods=["GET", "POST"])
+# POST to /postular/ (no id) will redirect preserving method to /postular/<id>
+@app.route("/postular/", methods=["GET","POST"])
 def postular_root():
-    """
-    Este endpoint acepta POSTs cuando el formulario
-    envía a /postular/ (sin id). Espera un campo hidden 'oferta_id'
-    para reenviar al endpoint con id, o procesa si se prefiere.
-    Si llega por GET redirige a listar_ofertas.
-    """
     if request.method == "GET":
         flash("Selecciona una oferta antes de postular.", "warning")
         return redirect(url_for("listar_ofertas"))
 
-    # POST: intentar tomar oferta_id desde form y redirigir al endpoint correcto
     oferta_id = request.form.get("oferta_id") or request.args.get("oferta_id")
     if not oferta_id:
-        # no tenemos id: devolver 400/redirect
         flash("No se recibió el identificador de la oferta.", "danger")
         return redirect(url_for("listar_ofertas"))
-    # reenviar la petición POST al endpoint con id:
+    # Redirect with 307 to preserve POST
     return redirect(url_for("postular", oferta_id=oferta_id), code=307)
-    # code=307 preserva método POST en la redirección para que la ruta
-    # /postular/<oferta_id> lo procese como POST.
 
-# -----------------------------------------------------
-# POSTULAR
-# -----------------------------------------------------
 @app.route("/postular/<oferta_id>", methods=["GET","POST"])
 def postular(oferta_id):
-
     try:
         oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
     except Exception as e:
@@ -368,12 +352,8 @@ def postular(oferta_id):
 
     return render_template("postular.html", oferta=oferta)
 
-# -----------------------------------------------------
-# LISTA DE POSTULANTES
-# -----------------------------------------------------
 @app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
-
     try:
         oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
     except Exception as e:
@@ -395,9 +375,6 @@ def ver_postulantes(oferta_id):
 
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
-# -----------------------------------------------------
-# EXPORTAR CSV (desencripta cuando es posible)
-# -----------------------------------------------------
 @app.route("/exportar_csv_con_datos_cifrados/<oferta_id>/")
 def exportar_csv_con_datos_cifrados(oferta_id):
     try:
@@ -409,12 +386,10 @@ def exportar_csv_con_datos_cifrados(oferta_id):
     if not oferta:
         abort(404)
 
-    # construir CSV en memoria
     output = io.StringIO()
     try:
         cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
         headers = ["nombre", "correo", "resumen", "fecha_nacimiento", "curriculum_stored_name", "match_score", "_created", "_id"]
-        import csv
         writer = csv.writer(output)
         writer.writerow(headers)
         for p in cursor:
@@ -445,7 +420,38 @@ def exportar_csv_con_datos_cifrados(oferta_id):
     filename = f"postulantes_oferta_{oferta_id}.csv"
     return send_file(mem, mimetype="text/csv", as_attachment=True, download_name=filename)
 
-# -----------------------------------------------------
+# ---------------------------------------------------------
+# RUTA QUE FALTABA: DESCARGAR CV
+# ---------------------------------------------------------
+@app.route("/descargar_cv/<postulante_id>")
+def descargar_cv(postulante_id):
+    try:
+        p = postulantes_col.find_one({"_id": ObjectId(postulante_id)})
+    except Exception:
+        abort(404)
+
+    if not p:
+        abort(404)
+
+    filename = p.get("curriculum_stored_name")
+    if not filename:
+        abort(404)
+
+    path = os.path.join(UPLOAD_DIR, filename)
+
+    if not os.path.exists(path):
+        abort(404)
+
+    # El nombre de descarga será el nombre original cifrado si deseas decodificar (aquí devolvemos el archivo tal cual)
+    try:
+        return send_file(path, as_attachment=True, download_name=filename)
+    except Exception as e:
+        logger.exception("Error enviando archivo: %s", e)
+        abort(500)
+
+# -------------------------
+# START
+# -------------------------
 if __name__ == "__main__":
     try:
         ensure_keys()
