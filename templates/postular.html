@@ -13,31 +13,31 @@
     class="cyber-card p-6 rounded-xl space-y-4"
     novalidate
   >
-    <!-- Campo hidden de respaldo por si el action llega vacío -->
+    <!-- Campo hidden de respaldo -->
     <input type="hidden" name="oferta_id" value="{{ oferta._id_str }}" />
 
     <label class="block">
       <span class="text-sm text-gray-300">Nombre completo</span>
       <input type="text" name="nombre" id="nombre" placeholder="Tu nombre completo" required
-             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600 focus:outline-none focus:ring-2 focus:ring-pink-500" />
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-600" />
     </label>
 
     <label class="block">
       <span class="text-sm text-gray-300">Correo electrónico</span>
       <input type="email" name="correo" id="correo" placeholder="ejemplo@correo.com" required
-             class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-blue-600" />
     </label>
 
     <label class="block">
       <span class="text-sm text-gray-300">Fecha de nacimiento</span>
       <input type="date" name="fecha_nacimiento" id="fecha_nacimiento" required
-             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500 focus:outline-none" />
+             class="w-full mt-1 p-3 rounded bg-black/40 border border-purple-500" />
       <p class="text-xs text-gray-400 mt-1">Debes ser mayor de 18 años para postular.</p>
     </label>
 
     <label class="block">
       <span class="text-sm text-gray-300">Resumen / Carta de presentación</span>
-      <textarea name="resumen" id="resumen" placeholder="Escribe un breve resumen..." class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600 focus:outline-none"></textarea>
+      <textarea name="resumen" id="resumen" placeholder="Escribe un breve resumen..." class="w-full mt-1 p-3 h-28 rounded bg-black/40 border border-pink-600"></textarea>
     </label>
 
     <label class="block">
@@ -134,7 +134,6 @@
       alertBox.textContent = '';
       document.getElementById('fileHelp').textContent = `Archivo listo: ${file.name} (${Math.round(file.size/1024)} KB)`;
     });
-
   })();
 </script>
 {% endblock %}
