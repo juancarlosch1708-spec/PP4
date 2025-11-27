@@ -7,7 +7,7 @@
 
   <form
     method="POST"
-    action="{{ url_for('postular', oferta_id=oferta._id_str) }}"
+    action="/postular/{{ oferta._id }}"
     enctype="multipart/form-data"
     id="postularForm"
     class="cyber-card p-6 rounded-xl space-y-4"
