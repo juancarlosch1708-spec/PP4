@@ -1,7 +1,6 @@
 # problema_mongo.py
 import os
 import io
-import csv
 import uuid
 import base64
 import re
@@ -24,7 +23,6 @@ from bson.objectid import ObjectId
 # Cryptography
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.fernet import Fernet
 
 # PDF extractor
 from PyPDF2 import PdfReader
@@ -77,7 +75,6 @@ try:
     logger.info("Conectado a MongoDB correctamente.")
 except Exception as e:
     logger.exception("Error conectando a MongoDB: %s", e)
-    # Si no puedes conectar a Mongo, mejor lanzar excepción clara en vez de un exit silencioso
     raise SystemExit("No se pudo conectar a MongoDB. Revisa MONGO_URI y que el servidor esté en ejecución.") from e
 
 db = client["reclutamiento_db"]
@@ -109,18 +106,18 @@ def ensure_keys():
         logger.info("Llaves RSA generadas.")
 
 def load_public_key():
-    """
-    Carga la llave pública; si no existe, crea pares de llaves primero.
-    """
-    if not os.path.exists(PUBLIC_KEY_PATH) or not os.path.exists(PRIVATE_KEY_PATH):
+    if not os.path.exists(PUBLIC_KEY_PATH):
         ensure_keys()
     with open(PUBLIC_KEY_PATH, "rb") as f:
         return serialization.load_pem_public_key(f.read())
 
+def load_private_key():
+    if not os.path.exists(PRIVATE_KEY_PATH):
+        ensure_keys()
+    with open(PRIVATE_KEY_PATH, "rb") as f:
+        return serialization.load_pem_private_key(f.read(), password=None)
+
 def rsa_encrypt_string(s: str) -> str:
-    """
-    Encripta un string con RSA y devuelve base64 del ciphertext.
-    """
     pub = load_public_key()
     ct = pub.encrypt(
         s.encode("utf-8"),
@@ -129,6 +126,25 @@ def rsa_encrypt_string(s: str) -> str:
                      label=None)
     )
     return base64.b64encode(ct).decode()
+
+def rsa_decrypt_string(b64_ct: str) -> str:
+    """
+    Intenta desencriptar una cadena base64 con la clave privada.
+    Si falla, lanza excepción hacia quien lo invoque.
+    """
+    priv = load_private_key()
+    try:
+        ct = base64.b64decode(b64_ct)
+        pt = priv.decrypt(
+            ct,
+            padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),
+                         algorithm=hashes.SHA256(),
+                         label=None)
+        )
+        return pt.decode("utf-8")
+    except Exception as e:
+        logger.debug("No se pudo desencriptar (posible texto no cifrado o error): %s", e)
+        raise
 
 # -----------------------------------------------------
 # UTILIDADES
@@ -152,7 +168,7 @@ def extract_text_from_pdf(path):
         return ""
 
 def calculate_age(born: date):
-    today = datetime.utcnow().date()  # evitar zona horaria del hosting
+    today = datetime.utcnow().date()
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
 STOPWORDS = {"de","la","el","y","en","a","los","las","con","para","por","un","una","es","se","su","que","al","del"}
@@ -166,7 +182,6 @@ def extract_keywords(text, min_len=4):
 def get_neural_network_match_score(t, d, r, cv):
     kws = extract_keywords((t or "")+" "+(d or "")+" "+(r or "")+" "+(cv or "")) or ["python","sql","docker"]
     score=0
-    # conteo sencillo basado en ocurrencias
     for kw in kws:
         score += (t or "").lower().count(kw) + (d or "").lower().count(kw) + (r or "").lower().count(kw) + (cv or "").lower().count(kw)
     return min(100, score*5)
@@ -176,9 +191,7 @@ def get_neural_network_match_score(t, d, r, cv):
 # -----------------------------------------------------
 def _delete_offer_and_postulants_by_id_string(oferta_id):
     try:
-        # eliminar postulantes que referencian por id string
         postulantes_col.delete_many({"oferta_id": oferta_id})
-        # eliminar oferta por ObjectId
         ofertas_col.delete_one({"_id": ObjectId(oferta_id)})
         return True, None
     except Exception as e:
@@ -240,6 +253,12 @@ def eliminar_oferta(oferta_id):
         flash(f"Error eliminando oferta: {err}", "danger")
     return redirect(url_for("listar_ofertas"))
 
+# Si alguien llega a /postular/ sin id, redirigir a listar_ofertas en vez de 404
+@app.route("/postular/")
+def postular_sin_id():
+    flash("Selecciona una oferta antes de postular.", "warning")
+    return redirect(url_for("listar_ofertas"))
+
 # -----------------------------------------------------
 # POSTULAR
 # -----------------------------------------------------
@@ -256,7 +275,6 @@ def postular(oferta_id):
         abort(404)
 
     if request.method == "POST":
-        # obtener campos con defensas ante KeyError
         nombre = request.form.get("nombre", "").strip()
         correo = request.form.get("correo", "").strip()
         resumen = request.form.get("resumen", "").strip()
@@ -285,7 +303,6 @@ def postular(oferta_id):
             flash("Solo se permiten archivos PDF.", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
-        # guardar archivo con nombre único y seguro
         original_filename = secure_filename(archivo.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
         path = os.path.join(UPLOAD_DIR, unique_name)
@@ -327,7 +344,6 @@ def postular(oferta_id):
         except Exception as e:
             logger.exception("Error insertando postulante: %s", e)
             flash("No se pudo guardar la postulación.", "danger")
-            # opcionalmente remover archivo si fallo insert
             try:
                 if os.path.exists(path):
                     os.remove(path)
@@ -365,12 +381,72 @@ def ver_postulantes(oferta_id):
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
 # -----------------------------------------------------
+# EXPORTAR CSV (desencripta cuando es posible)
+# Esto corresponde al nombre de endpoint que tu template espera:
+# url_for('exportar_csv_con_datos_cifrados', oferta_id=oferta._id_str)
+# -----------------------------------------------------
+@app.route("/exportar_csv_con_datos_cifrados/<oferta_id>/")
+def exportar_csv_con_datos_cifrados(oferta_id):
+    try:
+        oferta = ofertas_col.find_one({"_id": ObjectId(oferta_id)})
+    except Exception as e:
+        logger.exception("ID oferta inválido en exportar CSV: %s", e)
+        oferta = None
+
+    if not oferta:
+        abort(404)
+
+    # construir CSV en memoria
+    output = io.StringIO()
+    writer = None
+    try:
+        cursor = postulantes_col.find({"oferta_id": oferta_id}).sort("_created", -1)
+        # cabeceras
+        headers = ["nombre", "correo", "resumen", "fecha_nacimiento", "curriculum_stored_name", "match_score", "_created", "_id"]
+        writer = csv_writer = None
+        import csv
+        writer = csv.writer(output)
+        writer.writerow(headers)
+        for p in cursor:
+            # intentar desencriptar, si falla dejar campo vacio o el valor original
+            def try_decrypt(val):
+                if not val:
+                    return ""
+                try:
+                    return rsa_decrypt_string(val)
+                except Exception:
+                    # si no está cifrado o hay problema, devolver el valor tal cual (o vacío)
+                    try:
+                        return val
+                    except Exception:
+                        return ""
+
+            nombre = try_decrypt(p.get("nombre_enc"))
+            correo = try_decrypt(p.get("correo_enc"))
+            resumen = try_decrypt(p.get("resumen_enc"))
+            fecha_nac = p.get("fecha_nacimiento", "")
+            curriculum_stored = p.get("curriculum_stored_name", "")
+            match = p.get("match_score", "")
+            created = p.get("_created", "")
+            _id = str(p.get("_id", ""))
+            writer.writerow([nombre, correo, resumen, fecha_nac, curriculum_stored, match, created, _id])
+    except Exception as e:
+        logger.exception("Error generando CSV: %s", e)
+        flash("Error al generar CSV.", "danger")
+        return redirect(url_for("ver_postulantes", oferta_id=oferta_id))
+
+    mem = io.BytesIO()
+    mem.write(output.getvalue().encode("utf-8"))
+    mem.seek(0)
+    filename = f"postulantes_oferta_{oferta_id}.csv"
+    return send_file(mem, mimetype="text/csv", as_attachment=True, download_name=filename)
+
+# -----------------------------------------------------
 if __name__ == "__main__":
-    # Asegurar llaves al inicio para evitar fallos al primer POST
     try:
         ensure_keys()
     except Exception as e:
         logger.exception("Error generando/cargando llaves: %s", e)
-    # Puerto configurable
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=True)
+
