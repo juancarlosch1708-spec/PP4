@@ -1,4 +1,4 @@
-# app.py
+# problema.py
 import os
 import uuid
 import base64
@@ -6,6 +6,8 @@ import re
 import logging
 from datetime import datetime, date
 from collections import Counter
+from io import StringIO, BytesIO
+
 from flask import (
     Flask, render_template, request, redirect, url_for,
     send_file, flash, abort
@@ -15,7 +17,7 @@ from werkzeug.utils import secure_filename
 # MongoDB
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-from bson.objectid import ObjectId, InvalidId
+from bson.objectid import ObjectId
 
 # Cryptography
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -31,7 +33,7 @@ from difflib import SequenceMatcher
 # CONFIG
 # -------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("problema")
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "curriculums")
@@ -161,6 +163,10 @@ def extract_text_from_pdf(path):
     except Exception:
         return ""
 
+def calculate_age(born: date):
+    today = datetime.utcnow().date()
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
 STOPWORDS = {"de","la","el","y","en","a","los","las","con","para","por","un","una","es","se","su","que","al","del"}
 
 def extract_keywords(text, min_len=4):
@@ -173,19 +179,17 @@ def similarity(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 # -------------------------
-# NUEVO SCORE INTELIGENTE (MEJORADO)
+# SCORE INTELIGENTE
 # -------------------------
 def get_neural_network_match_score(titulo, descripcion, resumen, cv_text):
     vacante_text = f"{titulo} {descripcion} {resumen}".lower()
-    
     vacante_keywords = extract_keywords(vacante_text)
     cv_keywords = extract_keywords(cv_text.lower())
 
     if not vacante_keywords or not cv_keywords:
-        return 20
+        return 20  # fallback
 
     score = 0
-
     for vk in vacante_keywords:
         for ck in cv_keywords:
             sim = similarity(vk, ck)
@@ -196,6 +200,10 @@ def get_neural_network_match_score(titulo, descripcion, resumen, cv_text):
             elif sim >= 0.40:
                 score += 1
 
+    # penalizar si no aparece texto en cv
+    if not cv_text or cv_text.strip() == "":
+        score = max(5, score // 2)
+
     return min(100, score)
 
 # -------------------------
@@ -204,7 +212,7 @@ def get_neural_network_match_score(titulo, descripcion, resumen, cv_text):
 def to_objectid(s):
     try:
         return ObjectId(s)
-    except:
+    except Exception:
         return None
 
 # -------------------------
@@ -241,11 +249,33 @@ def crear_oferta():
             "_created": datetime.utcnow()
         }
         ofertas_col.insert_one(nueva)
-
         flash("Oferta creada", "success")
         return redirect(url_for("listar_ofertas"))
 
     return render_template("crear_oferta.html")
+
+@app.route("/eliminar_oferta/<oferta_id>/", methods=["POST"])
+def eliminar_oferta(oferta_id):
+    oid = to_objectid(oferta_id)
+    if oid is None:
+        abort(404)
+    try:
+        postulantes_col.delete_many({"oferta_id": oid})
+        ofertas_col.delete_one({"_id": oid})
+    except Exception as e:
+        logger.exception("Error eliminando oferta: %s", e)
+        flash("Error al eliminar", "danger")
+        return redirect(url_for("listar_ofertas"))
+    flash("Oferta eliminada", "success")
+    return redirect(url_for("listar_ofertas"))
+
+@app.route("/postular/", methods=["POST"])
+def postular_root():
+    oferta_id = request.form.get("oferta_id")
+    if not oferta_id:
+        flash("No se recibió la oferta.", "danger")
+        return redirect(url_for("listar_ofertas"))
+    return redirect(url_for("postular", oferta_id=oferta_id))
 
 @app.route("/postular/<oferta_id>", methods=["GET","POST"])
 def postular(oferta_id):
@@ -270,47 +300,67 @@ def postular(oferta_id):
 
         try:
             fecha_nac = datetime.strptime(f_nac, "%Y-%m-%d").date()
-        except:
-            flash("Fecha inválida", "danger")
+        except Exception:
+            flash("Fecha inválida (formato YYYY-MM-DD)", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
-        if archivo is None or archivo.filename == "":
-            flash("Sube un PDF.", "danger")
+        if calculate_age(fecha_nac) < 18:
+            flash("Debes ser mayor de edad", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
+
+        if not archivo or archivo.filename == "":
+            flash("Adjunta un PDF válido", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         if not allowed_file(archivo.filename):
-            flash("Sólo PDF", "danger")
+            flash("Sólo se permiten archivos PDF", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         original_filename = secure_filename(archivo.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
         path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
-        archivo.save(path)
 
-        cv_text = extract_text_from_pdf(path)
+        try:
+            archivo.save(path)
+        except Exception as e:
+            logger.exception("Error guardando archivo: %s", e)
+            flash("Error guardando el archivo. Intenta de nuevo.", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
+
+        extracted = extract_text_from_pdf(path)
 
         score = get_neural_network_match_score(
-            oferta.get("titulo",""),
-            oferta.get("descripcion",""),
+            oferta.get("titulo", ""),
+            oferta.get("descripcion", ""),
             resumen,
-            cv_text
+            extracted
         )
 
         ensure_keys()
 
-        nuevo = {
-            "nombre_enc": rsa_encrypt_string(nombre),
-            "correo_enc": rsa_encrypt_string(correo),
-            "resumen_enc": rsa_encrypt_string(resumen),
-            "fecha_nacimiento": fecha_nac.isoformat(),
-            "curriculum_stored_name": unique_name,
-            "curriculum_filename_enc": rsa_encrypt_string(original_filename),
-            "match_score": score,
-            "oferta_id": oid,
-            "_created": datetime.utcnow()
-        }
-
-        postulantes_col.insert_one(nuevo)
+        try:
+            nuevo = {
+                "nombre_enc": rsa_encrypt_string(nombre),
+                "correo_enc": rsa_encrypt_string(correo),
+                "resumen_enc": rsa_encrypt_string(resumen),
+                "fecha_nacimiento": fecha_nac.isoformat(),
+                "curriculum_stored_name": unique_name,
+                "curriculum_filename_enc": rsa_encrypt_string(original_filename),
+                "match_score": score,
+                "oferta_id": oid,
+                "_created": datetime.utcnow()
+            }
+            postulantes_col.insert_one(nuevo)
+        except Exception as e:
+            logger.exception("Error insertando postulante: %s", e)
+            # limpiar archivo guardado si falla
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            flash("Error guardando la postulación. Intenta de nuevo.", "danger")
+            return redirect(url_for("postular", oferta_id=oferta_id))
 
         flash("Postulación enviada", "success")
         return redirect(url_for("listar_ofertas"))
@@ -318,7 +368,7 @@ def postular(oferta_id):
     return render_template("postular.html", oferta=oferta)
 
 # -------------------------
-# 🔥 RANKING AUTOMÁTICO + DESCIFRADO
+# RUTA POSTULANTES: DESCIFRAR + RANKING
 # -------------------------
 @app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
@@ -331,31 +381,36 @@ def ver_postulantes(oferta_id):
         abort(404)
 
     postulantes_cursor = postulantes_col.find({"oferta_id": oid})
-
     postulantes = []
     for p in postulantes_cursor:
-
+        # intentar descifrar, si falla mostrar placeholder
         try:
-            p["nombre"] = rsa_decrypt_string(p.get("nombre_enc", ""))
-            p["correo"] = rsa_decrypt_string(p.get("correo_enc", ""))
-        except:
-            p["nombre"] = "Error"
-            p["correo"] = "Error"
+            nombre = rsa_decrypt_string(p.get("nombre_enc", "")) if p.get("nombre_enc") else ""
+        except Exception:
+            nombre = "Nombre (error descifrar)"
+        try:
+            correo = rsa_decrypt_string(p.get("correo_enc", "")) if p.get("correo_enc") else ""
+        except Exception:
+            correo = "Correo (error descifrar)"
 
-        p["_id_str"] = str(p["_id"])
+        postulantes.append({
+            "_id_str": str(p.get("_id")),
+            "nombre": nombre,
+            "correo": correo,
+            "fecha_nacimiento": p.get("fecha_nacimiento"),
+            "match_score": p.get("match_score", 0),
+            "curriculum_stored_name": p.get("curriculum_stored_name"),
+        })
 
-        postulantes.append(p)
-
-    # 🔥 RANKING: ordenar por score desc
+    # ordenar por match_score descendente (ranking automático)
     postulantes = sorted(postulantes, key=lambda x: x.get("match_score", 0), reverse=True)
 
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
 @app.route("/descargar_cv/<postulante_id>")
 def descargar_cv(postulante_id):
-    try:
-        pid = ObjectId(postulante_id)
-    except:
+    pid = to_objectid(postulante_id)
+    if pid is None:
         abort(404)
 
     p = postulantes_col.find_one({"_id": pid})
@@ -363,15 +418,25 @@ def descargar_cv(postulante_id):
         abort(404)
 
     filename = p.get("curriculum_stored_name")
-    path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if not filename:
+        abort(404)
 
+    path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     if not os.path.exists(path):
         abort(404)
 
-    return send_file(path, as_attachment=True, download_name=filename)
+    # Intentar nombre original si está cifrado
+    download_name = filename
+    try:
+        if p.get("curriculum_filename_enc"):
+            download_name = rsa_decrypt_string(p.get("curriculum_filename_enc"))
+    except Exception:
+        pass
+
+    return send_file(path, as_attachment=True, download_name=download_name)
 
 # -------------------------
-# EXPORTAR CSV
+# EXPORTAR CSV CON DATOS CIFRADOS
 # -------------------------
 @app.route("/exportar_csv_con_datos_cifrados/<oferta_id>")
 def exportar_csv_con_datos_cifrados(oferta_id):
@@ -381,11 +446,8 @@ def exportar_csv_con_datos_cifrados(oferta_id):
 
     postulantes = list(postulantes_col.find({"oferta_id": oid}))
 
-    import csv
-    from io import StringIO, BytesIO
-
     output = StringIO()
-    writer = csv.writer(output)
+    writer = __import__("csv").writer(output)
     writer.writerow(["nombre_enc", "correo_enc", "resumen_enc", "fecha_nacimiento", "match_score"])
 
     for p in postulantes:
@@ -414,4 +476,5 @@ def exportar_csv_con_datos_cifrados(oferta_id):
 if __name__ == "__main__":
     ensure_keys()
     port = int(os.environ.get("PORT", 8080))
+    # host 0.0.0.0 para entornos como Render
     app.run(host="0.0.0.0", port=port)
