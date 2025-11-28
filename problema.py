@@ -1,5 +1,4 @@
 # app.py
-
 import os
 import uuid
 import base64
@@ -24,6 +23,9 @@ from cryptography.hazmat.primitives import serialization, hashes
 
 # PDF extractor
 from PyPDF2 import PdfReader
+
+# Similaridad
+from difflib import SequenceMatcher
 
 # -------------------------
 # CONFIG
@@ -85,7 +87,7 @@ postulantes_col = db["postulantes"]
 # -------------------------
 def ensure_keys():
     if not (os.path.exists(PRIVATE_KEY_PATH) and os.path.exists(PUBLIC_KEY_PATH)):
-        logger.info("Generando par de llaves RSA...")
+        logger.info("Generando llaves RSA...")
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
         with open(PRIVATE_KEY_PATH, "wb") as f:
@@ -159,47 +161,50 @@ def extract_text_from_pdf(path):
     except Exception:
         return ""
 
-def calculate_age(born: date):
-    today = datetime.utcnow().date()
-    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
-
 STOPWORDS = {"de","la","el","y","en","a","los","las","con","para","por","un","una","es","se","su","que","al","del"}
 
 def extract_keywords(text, min_len=4):
     text = re.sub(r"[^\w\s]", " ", (text or "").lower())
     tokens = [t for t in text.split() if len(t)>=min_len and t not in STOPWORDS]
     freq = Counter(tokens)
-    return [w for w,c in freq.most_common(20)]
+    return [w for w,c in freq.most_common(25)]
 
-def get_neural_network_match_score(t, d, r, cv):
-    kws = extract_keywords((t or "")+" "+(d or "")+" "+(r or "")+" "+(cv or "")) or ["python","sql","docker"]
+def similarity(a, b):
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+# -------------------------
+# NUEVO SCORE INTELIGENTE (MEJORADO)
+# -------------------------
+def get_neural_network_match_score(titulo, descripcion, resumen, cv_text):
+    vacante_text = f"{titulo} {descripcion} {resumen}".lower()
+    
+    vacante_keywords = extract_keywords(vacante_text)
+    cv_keywords = extract_keywords(cv_text.lower())
+
+    if not vacante_keywords or not cv_keywords:
+        return 20
 
     score = 0
-    for kw in kws:
-        score += (t or "").lower().count(kw) + (d or "").lower().count(kw) + (r or "").lower().count(kw) + (cv or "").lower().count(kw)
 
-    return min(100, score*5)
+    for vk in vacante_keywords:
+        for ck in cv_keywords:
+            sim = similarity(vk, ck)
+            if sim >= 0.80:
+                score += 6
+            elif sim >= 0.60:
+                score += 3
+            elif sim >= 0.40:
+                score += 1
+
+    return min(100, score)
 
 # -------------------------
 # HELPERS
 # -------------------------
-def _delete_offer_and_postulants_by_id_string(oferta_id_str):
-    try:
-        oid = ObjectId(oferta_id_str)
-    except Exception as e:
-        return False, f"ID inválido: {e}"
-
-    try:
-        postulantes_col.delete_many({"oferta_id": oid})
-        ofertas_col.delete_one({"_id": oid})
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
 def to_objectid(s):
     try:
         return ObjectId(s)
-    except (InvalidId, TypeError):
+    except:
         return None
 
 # -------------------------
@@ -242,20 +247,6 @@ def crear_oferta():
 
     return render_template("crear_oferta.html")
 
-@app.route("/eliminar_oferta/<oferta_id>", methods=["POST"])
-def eliminar_oferta(oferta_id):
-    ok, err = _delete_offer_and_postulants_by_id_string(oferta_id)
-    flash("Oferta eliminada" if ok else f"Error: {err}", "danger" if not ok else "success")
-    return redirect(url_for("listar_ofertas"))
-
-@app.route("/postular/", methods=["POST"])
-def postular_root():
-    oferta_id = request.form.get("oferta_id")
-    if not oferta_id:
-        flash("No se recibió la oferta.", "danger")
-        return redirect(url_for("listar_ofertas"))
-    return redirect(url_for("postular", oferta_id=oferta_id))
-
 @app.route("/postular/<oferta_id>", methods=["GET","POST"])
 def postular(oferta_id):
     oid = to_objectid(oferta_id)
@@ -279,40 +270,30 @@ def postular(oferta_id):
 
         try:
             fecha_nac = datetime.strptime(f_nac, "%Y-%m-%d").date()
-        except Exception:
-            flash("Fecha inválida (formato YYYY-MM-DD)", "danger")
+        except:
+            flash("Fecha inválida", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
-        if calculate_age(fecha_nac) < 18:
-            flash("Debes ser mayor de edad", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
-
-        if not archivo or archivo.filename == "":
-            flash("Adjunta un PDF válido", "danger")
+        if archivo is None or archivo.filename == "":
+            flash("Sube un PDF.", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         if not allowed_file(archivo.filename):
-            flash("Sólo se permiten archivos PDF", "danger")
+            flash("Sólo PDF", "danger")
             return redirect(url_for("postular", oferta_id=oferta_id))
 
         original_filename = secure_filename(archivo.filename)
         unique_name = f"{uuid.uuid4().hex}.pdf"
         path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
+        archivo.save(path)
 
-        try:
-            archivo.save(path)
-        except Exception as e:
-            logger.exception("Error guardando archivo: %s", e)
-            flash("Error guardando el archivo. Intenta de nuevo.", "danger")
-            return redirect(url_for("postular", oferta_id=oferta_id))
-
-        extracted = extract_text_from_pdf(path)
+        cv_text = extract_text_from_pdf(path)
 
         score = get_neural_network_match_score(
-            oferta.get("titulo", ""),
-            oferta.get("descripcion", ""),
+            oferta.get("titulo",""),
+            oferta.get("descripcion",""),
             resumen,
-            extracted
+            cv_text
         )
 
         ensure_keys()
@@ -329,23 +310,16 @@ def postular(oferta_id):
             "_created": datetime.utcnow()
         }
 
-        try:
-            postulantes_col.insert_one(nuevo)
-        except Exception as e:
-            logger.exception("Error insertando postulante: %s", e)
-            flash("Error guardando la postulación. Intenta de nuevo.", "danger")
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
-            return redirect(url_for("postular", oferta_id=oferta_id))
+        postulantes_col.insert_one(nuevo)
 
         flash("Postulación enviada", "success")
         return redirect(url_for("listar_ofertas"))
 
     return render_template("postular.html", oferta=oferta)
 
+# -------------------------
+# 🔥 RANKING AUTOMÁTICO + DESCIFRADO
+# -------------------------
 @app.route("/postulantes/<oferta_id>/")
 def ver_postulantes(oferta_id):
     oid = to_objectid(oferta_id)
@@ -356,12 +330,24 @@ def ver_postulantes(oferta_id):
     if not oferta:
         abort(404)
 
-    postulantes_cursor = postulantes_col.find({"oferta_id": oid}).sort("_created", -1)
+    postulantes_cursor = postulantes_col.find({"oferta_id": oid})
 
     postulantes = []
     for p in postulantes_cursor:
+
+        try:
+            p["nombre"] = rsa_decrypt_string(p.get("nombre_enc", ""))
+            p["correo"] = rsa_decrypt_string(p.get("correo_enc", ""))
+        except:
+            p["nombre"] = "Error"
+            p["correo"] = "Error"
+
         p["_id_str"] = str(p["_id"])
+
         postulantes.append(p)
+
+    # 🔥 RANKING: ordenar por score desc
+    postulantes = sorted(postulantes, key=lambda x: x.get("match_score", 0), reverse=True)
 
     return render_template("postulantes.html", oferta=oferta, postulantes=postulantes)
 
@@ -369,7 +355,7 @@ def ver_postulantes(oferta_id):
 def descargar_cv(postulante_id):
     try:
         pid = ObjectId(postulante_id)
-    except Exception:
+    except:
         abort(404)
 
     p = postulantes_col.find_one({"_id": pid})
@@ -377,9 +363,6 @@ def descargar_cv(postulante_id):
         abort(404)
 
     filename = p.get("curriculum_stored_name")
-    if not filename:
-        abort(404)
-
     path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
 
     if not os.path.exists(path):
@@ -388,9 +371,8 @@ def descargar_cv(postulante_id):
     return send_file(path, as_attachment=True, download_name=filename)
 
 # -------------------------
-# RUTA NUEVA: EXPORTAR CSV CON DATOS CIFRADOS
+# EXPORTAR CSV
 # -------------------------
-
 @app.route("/exportar_csv_con_datos_cifrados/<oferta_id>")
 def exportar_csv_con_datos_cifrados(oferta_id):
     oid = to_objectid(oferta_id)
